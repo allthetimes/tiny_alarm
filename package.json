@@ -1,0 +1,33 @@
+{
+  "name": "tiny-alarm",
+  "version": "1.0.0",
+  "description": "A calm, focused desktop alarm clock",
+  "main": "dist-electron/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.electron.json -w\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "start": "electron .",
+    "pack": "npm run build && electron-builder"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.tinyalarm.app",
+    "productName": "小小闹钟",
+    "files": ["dist/**/*", "dist-electron/**/*"],
+    "extraResources": [{ "from": "sounds", "to": "sounds", "filter": ["**/*"] }],
+    "win": { "target": "nsis" }
+  },
+  "dependencies": {
+    "ansi-styles": "^7.0.0",
+    "lodash": "^4.18.1"
+  }
+}
