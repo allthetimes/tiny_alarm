@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 小小闹钟 (Tiny Alarm)
 
 一款基于 Electron + Vite + TypeScript 的 Windows 桌面闹钟应用。窄高竖条形手机风格界面，简洁美观，支持自定义本地音乐铃声、多闹钟管理、法定工作日重复规则，并内置音乐下载窗口。
@@ -127,3 +128,4 @@ tiny_alarm/
 ## License
 
 MIT
+=======
