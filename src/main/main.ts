@@ -100,6 +100,16 @@ app.whenReady().then(async () => {
   const soundsDir = soundsPath();
   await fs.mkdir(soundsDir, { recursive: true });
 
+  // 打包版首次启动:把安装目录自带的默认铃声复制到用户目录
+  if (app.isPackaged) {
+    try {
+      const bundled = path.join(process.resourcesPath, 'sounds');
+      if (await exists(bundled) && (await fs.readdir(soundsDir)).length === 0) {
+        await fs.cp(bundled, soundsDir, { recursive: true });
+      }
+    } catch { /* 铃声初始化失败不影响启动 */ }
+  }
+
   protocol.handle(SOUND_SCHEME, async (request) => {
     try {
       const { host, pathname } = new URL(request.url);
