@@ -82,7 +82,10 @@ npm run build
 npm run pack
 ```
 
-打包使用 electron-builder（NSIS 安装包），铃声目录在安装后位于用户数据目录，首次启动自动创建。
+- 产物输出在 `release/`：`小小闹钟 Setup x.x.x.exe`（NSIS 安装包）与 `win-unpacked/`（免安装绿色版）。
+- Vite 输出目录是 `dist/`，electron-builder 输出目录是 `release/`，两者分离，避免安装包递归膨胀。
+- 渲染层构建固定使用 `--base=./`（file:// 加载必须用相对资源路径，否则打包后白屏），由 `scripts/vite-build.cjs` 启动，它同时为 Node 16 补齐 `crypto.getRandomValues`。
+- 打包后铃声目录位于用户数据目录，首次启动自动从安装目录复制默认铃声。
 
 ## 项目结构
 
@@ -94,6 +97,7 @@ tiny_alarm/
 │   └── renderer/      # 前端页面：闹钟列表、弹窗表单、响铃遮罩、样式
 ├── sounds/            # 开发环境铃声目录（导入的音频存放于此）
 ├── index.html         # Vite 入口
+├── scripts/           # 构建辅助脚本（vite-build.cjs：Node 16 兼容 + 相对路径 base）
 ├── package.json       # 脚本与 electron-builder 配置
 ├── tsconfig.json      # renderer 编译配置
 └── tsconfig.electron.json  # 主进程/preload 编译配置

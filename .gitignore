@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-electron/
+release/
 .vs/
 *.local
 .DS_Store
@@ -8,3 +9,4 @@ sounds/alarm-*
 
 # 铃声库目录：保留目录结构但忽略导入的音频文件
 !sounds/.gitkeep
+build.log

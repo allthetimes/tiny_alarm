@@ -1,7 +1,7 @@
 import type { Alarm, PickedAudio, Repeat, HolidayConfig } from './types';
 import './style.css';
 
-declare global { interface Window { alarmAPI: { load: () => Promise<Alarm[]>; save: (alarms: Alarm[]) => Promise<void>; pickAudio: () => Promise<PickedAudio>; loadHolidays: () => Promise<HolidayConfig>; openMusicSite: () => Promise<void>; openMusicApp: () => Promise<void>; onSoundsUpdated: (cb: () => void) => void; onDownloadDone: (cb: (saved: string, final: string) => void) => void; listSounds: () => Promise<{ path: string; name: string }[]>; renameSound: (oldName: string, newName: string) => Promise<{ path: string; name: string } | null>; deleteSound: (name: string) => Promise<boolean> } } }
+declare global { interface Window { alarmAPI: { load: () => Promise<Alarm[]>; save: (alarms: Alarm[]) => Promise<void>; pickAudio: () => Promise<PickedAudio>; loadHolidays: () => Promise<HolidayConfig>; openMusicSite: () => Promise<void>; openMusicApp: () => Promise<void>; onSoundsUpdated: (cb: () => void) => void; onDownloadBefore: (cb: (token: string, name: string) => void) => void; onDownloadStarted: (cb: (token: string, name: string) => void) => void; onDownloadProgress: (cb: (token: string, name: string, received: number, total: number) => void) => void; onDownloadDone: (cb: (token: string, final: string) => void) => void; onDownloadFailed: (cb: (token: string) => void) => void; confirmDownload: (token: string, name: string) => Promise<string | null>; cancelDownload: (token: string) => Promise<boolean>; listSounds: () => Promise<{ path: string; name: string; cover?: string }[]>; renameSound: (oldName: string, newName: string) => Promise<{ path: string; name: string } | null>; deleteSound: (name: string) => Promise<boolean> } } }
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 const repeats: { key: Repeat; label: string }[] = [
   { key: 'once', label: '仅一次' },
@@ -25,6 +25,8 @@ let retryTimer: number | null = null;
 let retriesLeft = 0;
 let holdTimer: number | null = null;
 let holdStarted = 0;
+let downloadState: { name: string; received: number; total: number } | null = null;
+let freshSound: string | null = null;
 audio.volume = volume;
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `<div class="phone"><header class="top"><div class="brand"><div class="brand-mark">✦</div><strong>小小闹钟</strong></div><div class="clock"><strong id="clock">--:--</strong><span id="date">----</span></div></header><div class="hero"><p class="hi">早上好</p><p class="active"><i></i><span id="active-label">0 个闹钟正在运行</span></p></div><section id="alarm-list" class="alarm-list"></section><section class="empty" id="empty"><div class="empty-icon">◷</div><h2>还没有闹钟</h2><p>创建一个闹钟，开启你的专注时刻</p></section><div class="dock"><div class="dock-side"><label class="volume"><span>♫</span><input id="volume" type="range" min="0" max="100" value="72" aria-label="音量"></label><button class="icon-btn" id="sound-lib">我的铃声</button></div><button class="fab" id="add-btn">＋ 新建</button></div></div><div class="modal-backdrop hidden" id="modal"><div class="modal"><button class="close" id="close">×</button><h2 id="modal-title">新建闹钟</h2><label>时间<div class="time-picker"><input id="time-input" type="time" value="08:00"></div></label><label>标签<input id="label-input" type="text" placeholder="例如：晨读"></label><label>重复<div class="repeat-chips" id="repeat-chips">${repeats.map(r => `<button data-repeat="${r.key}">${r.label}</button>`).join('')}</div><div class="days" id="days">${weekdays.map((d, i) => `<button data-day="${i}">${d}</button>`).join('')}</div></label><div class="settings-grid"><label>响铃时长<select id="ring-seconds"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label><label>再响间隔<select id="snooze-minutes"><option value="0">不再响</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option></select></label><label>最多再响<select id="snooze-count"><option value="0">0 次</option><option value="1">1 次</option><option value="3" selected>3 次</option><option value="5">5 次</option></select></label></div><label>铃声<div class="sound-row"><button class="sound-select" id="sound-btn">♫ <span id="sound-name">系统默认铃声</span></button><button class="test-btn" id="test-sound">试听</button></div></label><button class="primary full" id="save-btn">保存闹钟</button></div></div><div class="modal-backdrop hidden" id="sound-lib-modal"><div class="modal"><button class="close" id="lib-close">×</button><h2 id="lib-title">我的铃声</h2><div class="lib-list" id="lib-list"></div><button class="primary full" id="lib-import">＋ 导入铃声</button><button class="ghost full" id="lib-site">🌐 内嵌打开音乐网站</button><small class="lib-hint">在内嵌窗口下载的音频会自动加入铃声库</small></div></div><div class="modal-backdrop hidden" id="rename-modal"><div class="modal small"><h2 id="rename-title">重命名铃声</h2><p class="rename-format" id="rename-format">alarm-（新名称）.mp3</p><div class="rename-box"><span class="rename-fixed" id="rename-prefix">alarm-</span><input id="rename-input" type="text" placeholder="新名称"><span class="rename-fixed" id="rename-ext">.mp3</span></div><div class="rename-actions"><button class="ghost" id="rename-cancel">取消</button><button class="primary" id="rename-ok">确定</button></div></div></div><div class="ring-overlay hidden" id="ring-overlay"><div class="ring-panel"><div class="ring-icon">♬</div><p class="ring-kicker">小小闹钟提醒</p><h2 id="ring-label">时间到了</h2><p>请长按空格键 5 秒关闭本次闹钟</p><div class="progress-track"><div id="space-progress"></div></div><small>已按住 <span id="hold-seconds">0</span> / 5 秒</small></div></div>`;
@@ -150,14 +152,23 @@ function stopPreview() { if (previewTimer) window.clearTimeout(previewTimer); pr
 async function renderLib() {
   const sounds = await window.alarmAPI.listSounds();
   const list = $('#lib-list');
-  list.innerHTML = [`<div class="lib-item ${selectedSound.path ? '' : 'selected'}"><button class="lib-pick" data-path="" data-name="系统默认铃声"><span class="lib-name">系统默认铃声</span></button><button class="lib-test" data-test="" data-testname="系统默认铃声" title="试听">▶</button></div>`]
-    .concat(sounds.map(s => `<div class="lib-item ${selectedSound.path === s.path ? 'selected' : ''}"><button class="lib-pick" data-path="${s.path}" data-name="${s.name}"><span class="lib-name">♫ ${s.name}</span></button><button class="lib-test" data-test="${s.path}" data-testname="${s.name}" title="试听">▶</button><button class="lib-ren" data-ren="${s.name}" title="重命名">✎</button><button class="lib-del" data-del="${s.name}" title="删除">✕</button></div>`)).join('');
+  const progress = (() => {
+    if (!downloadState) return '';
+    const { name, received, total } = downloadState;
+    const pct = total > 0 ? Math.min(100, Math.round(received / total * 100)) : 0;
+    const label = total > 0 ? `${pct}%` : `${(received / 1048576).toFixed(1)} MB`;
+    return `<div class="dl-progress" id="dl-progress-row"><p>⬇ 正在下载 ${name}</p><div class="dl-track"><div id="dl-bar" style="width:${pct}%"></div></div><small id="dl-pct">${label}</small></div>`;
+  })();
+  list.innerHTML = [progress, `<div class="lib-item ${selectedSound.path ? '' : 'selected'}"><button class="lib-pick" data-path="" data-name="系统默认铃声"><span class="lib-name">系统默认铃声</span></button><button class="lib-test" data-test="" data-testname="系统默认铃声" title="试听">▶</button></div>`]
+    .concat(sounds.map(s => `<div class="lib-item ${selectedSound.path === s.path ? 'selected' : ''}${s.name === freshSound ? ' fresh' : ''}"><button class="lib-pick" data-path="${s.path}" data-name="${s.name}">${s.cover ? `<img class="lib-cover" src="${s.cover}" alt="">` : '<span class="lib-note">♫</span>'}<span class="lib-name">${s.name}</span></button><button class="lib-test" data-test="${s.path}" data-testname="${s.name}" title="试听">▶</button><button class="lib-ren" data-ren="${s.name}" title="重命名">✎</button><button class="lib-del" data-del="${s.name}" title="删除">✕</button></div>`)).join('');
   list.querySelectorAll<HTMLButtonElement>('.lib-pick').forEach(b => b.addEventListener('click', () => { selectedSound = { path: b.dataset.path || '', name: b.dataset.name || '系统默认铃声' }; $('#sound-name').textContent = selectedSound.name; renderLib(); }));
   list.querySelectorAll<HTMLButtonElement>('.lib-test').forEach(b => b.addEventListener('click', () => testSound(b.dataset.test || '', b.dataset.testname || '')));
   list.querySelectorAll<HTMLButtonElement>('.lib-ren').forEach(b => b.addEventListener('click', () => openRename(b.dataset.ren!)));
   list.querySelectorAll<HTMLButtonElement>('.lib-del').forEach(b => b.addEventListener('click', async () => { if (!confirm(`确定删除铃声「${b.dataset.del}」吗？`)) return; await window.alarmAPI.deleteSound(b.dataset.del!); if (selectedSound.name === b.dataset.del) { selectedSound = { path: '', name: '系统默认铃声' }; $('#sound-name').textContent = selectedSound.name; } renderLib(); }));
 }
 let renamingSound = '';
+let pendingDownloadToken = '';
+let renameBusy = false;
 function testSound(path: string, name: string) {
   if (previewTimer) window.clearTimeout(previewTimer); previewTimer = null;
   audio.pause(); audio.currentTime = 0;
@@ -174,12 +185,14 @@ function testSound(path: string, name: string) {
 }
 let renamePrefix = 'alarm-';
 let renameExt = '';
-function openRename(name: string) {
+function openRename(name: string, downloadToken = '') {
   renamingSound = name;
+  pendingDownloadToken = downloadToken;
+  $('#rename-title').textContent = downloadToken ? '命名并下载铃声' : '重命名铃声';
   renameExt = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '.mp3';
   const stem = name.slice(0, name.length - renameExt.length);
-  renamePrefix = stem.startsWith('alarm-') ? 'alarm-' : '';
-  const middle = renamePrefix ? stem.slice(6) : stem;
+  renamePrefix = 'alarm-';
+  const middle = stem.startsWith('alarm-') ? stem.slice(6) : stem;
   ($('#rename-input') as HTMLInputElement).value = middle;
   ($('#rename-input') as HTMLInputElement).readOnly = false;
   $('#rename-format').textContent = `${renamePrefix}（新名称）${renameExt}`;
@@ -188,7 +201,8 @@ function openRename(name: string) {
   $('#rename-modal').classList.remove('hidden');
   ($('#rename-input') as HTMLInputElement).focus();
 }
-function closeRename() { $('#rename-modal').classList.add('hidden'); renamingSound = ''; }
+function closeRename() { $('#rename-modal').classList.add('hidden'); renamingSound = ''; pendingDownloadToken = ''; renameBusy = false; }
+async function cancelPendingDownload() { if (pendingDownloadToken) await window.alarmAPI.cancelDownload(pendingDownloadToken); closeRename(); }
 
 setInterval(tick, 1000); tick();
 $('#add-btn').addEventListener('click', () => openModal()); $('#close').addEventListener('click', closeModal);
@@ -201,27 +215,49 @@ const volumeInput = $('#volume') as HTMLInputElement;
 const setVolume = (v: number) => { const clamped = Math.max(0, Math.min(100, Math.round(v))); volumeInput.value = String(clamped); volume = clamped / 100; audio.volume = volume; };
 volumeInput.addEventListener('wheel', e => { e.preventDefault(); setVolume(Number(volumeInput.value) + (e.deltaY < 0 ? 5 : -5)); }, { passive: false });
 $('#sound-lib').addEventListener('click', () => { renderLib().then(() => $('#sound-lib-modal').classList.remove('hidden')); });
-$('#lib-close').addEventListener('click', () => { stopPreview(); $('#sound-lib-modal').classList.add('hidden'); });
+$('#lib-close').addEventListener('click', () => { stopPreview(); $('#sound-lib-modal').classList.add('hidden'); freshSound = null; });
 $('#test-sound').addEventListener('click', () => testSound(selectedSound.path, selectedSound.name));
 $('#lib-site').addEventListener('click', () => { window.alarmAPI.openMusicApp(); });
 $('#rename-ok').addEventListener('click', async () => {
   const middle = ($('#rename-input') as HTMLInputElement).value.trim().replace(/[\\/:*?"<>|]/g, '_');
-  if (!renamingSound) return;
+  if (!renamingSound || renameBusy) return;
   if (!middle) { alert('请输入铃声名称'); return; }
   const fullNew = `${renamePrefix}${middle}${renameExt}`;
-  if (fullNew !== renamingSound) {
-    const result = await window.alarmAPI.renameSound(renamingSound, fullNew);
-    if (!result) { alert('重命名失败：名称可能已存在'); return; }
-    if (selectedSound.name === renamingSound) { selectedSound = result; $('#sound-name').textContent = result.name; }
+  renameBusy = true;
+  ($('#rename-ok') as HTMLButtonElement).disabled = true;
+  try {
+    if (pendingDownloadToken) {
+      const result = await window.alarmAPI.confirmDownload(pendingDownloadToken, fullNew);
+      if (!result) { alert('下载命名失败：名称可能已存在'); return; }
+    } else if (fullNew !== renamingSound) {
+      const result = await window.alarmAPI.renameSound(renamingSound, fullNew);
+      if (!result) { alert('重命名失败：名称可能已存在'); return; }
+      if (selectedSound.name === renamingSound) { selectedSound = result; $('#sound-name').textContent = result.name; }
+    }
+    closeRename();
+    renderLib();
+  } finally {
+    renameBusy = false;
+    ($('#rename-ok') as HTMLButtonElement).disabled = false;
   }
-  closeRename(); renderLib();
 });
-$('#rename-cancel').addEventListener('click', closeRename);
-$('#rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') ($('#rename-ok') as HTMLButtonElement).click(); if (e.key === 'Escape') closeRename(); });
+$('#rename-cancel').addEventListener('click', async () => { await cancelPendingDownload(); });
+$('#rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') ($('#rename-ok') as HTMLButtonElement).click(); if (e.key === 'Escape') cancelPendingDownload(); });
 window.alarmAPI.onSoundsUpdated(() => { if (!$('#sound-lib-modal').classList.contains('hidden')) renderLib(); });
-window.alarmAPI.onDownloadDone((_saved, finalName) => {
-  if (!$('#sound-lib-modal').classList.contains('hidden')) openRename(finalName);
+window.alarmAPI.onDownloadBefore((token, name) => {
+  downloadState = { name, received: 0, total: 0 };
+  renderLib().then(() => { $('#sound-lib-modal').classList.remove('hidden'); openRename(name, token); });
 });
+window.alarmAPI.onDownloadStarted((token, name) => { downloadState = { name, received: 0, total: 0 }; renderLib(); });
+window.alarmAPI.onDownloadProgress((token, name, received, total) => {
+  if (received < 0) { downloadState = null; if (!$('#sound-lib-modal').classList.contains('hidden')) renderLib(); return; }
+  downloadState = { name, received, total };
+  const bar = document.getElementById('dl-bar');
+  if (bar) { const pct = total > 0 ? Math.min(100, Math.round(received / total * 100)) : 0; bar.style.width = `${pct}%`; const pctEl = document.getElementById('dl-pct'); if (pctEl) pctEl.textContent = total > 0 ? `${pct}%` : `${(received / 1048576).toFixed(1)} MB`; }
+  else if (!$('#sound-lib-modal').classList.contains('hidden')) renderLib();
+});
+window.alarmAPI.onDownloadDone((token, finalName) => { downloadState = null; freshSound = finalName; renderLib(); closeRename(); });
+window.alarmAPI.onDownloadFailed(token => { if (token === pendingDownloadToken) closeRename(); downloadState = null; if (!$('#sound-lib-modal').classList.contains('hidden')) renderLib(); });
 $('#save-btn').addEventListener('click', async () => {
   const days = [...document.querySelectorAll<HTMLButtonElement>('#days .selected')].map(b => Number(b.dataset.day));
   const time = ($('#time-input') as HTMLInputElement).value; if (!time) return;
