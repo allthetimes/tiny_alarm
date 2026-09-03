@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, protocol, net, shell } from 'electron';
 import type { DownloadItem } from 'electron';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
@@ -8,7 +8,13 @@ import type { HolidayConfig } from '../renderer/types';
 
 let win: BrowserWindow | null = null;
 let musicWin: BrowserWindow | null = null;
+let settingsWin: BrowserWindow | null = null;
+let tray: Tray | null = null;
+// 关闭行为:null=每次询问; 'minimize'=记住最小化到托盘; 'exit'=记住直接退出
+let closeAction: 'minimize' | 'exit' | null = null;
+let quitting = false;
 const MUSIC_SITE = 'https://flac.music.hi.cn/';
+const GITHUB_URL = 'https://github.com/allthetimes/tiny_alarm';
 const DOWNLOAD_EXTS = /\.(mp3|wav|ogg|m4a|flac|aac|ape)$/i;
 const SOUND_SCHEME = 'alarm-sound';
 const storePath = () => path.join(app.getPath('userData'), 'alarms.json');
@@ -55,10 +61,47 @@ protocol.registerSchemesAsPrivileged([{ scheme: SOUND_SCHEME, privileges: { stan
 function safeStem(value: string) { return path.basename(value).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 120); }
 async function uniqueSoundName(stem: string, ext: string) {
   const cleanStem = safeStem(stem) || '铃声';
-  let filename = `alarm-${cleanStem}${ext}`;
+  let filename = `${cleanStem}${ext}`;
   let index = 1;
-  while (reservedNames.has(filename) || await exists(path.join(soundsPath(), filename))) filename = `alarm-${cleanStem}_${index++}${ext}`;
+  while (reservedNames.has(filename) || await exists(path.join(soundsPath(), filename))) filename = `${cleanStem}_${index++}${ext}`;
   return filename;
+}
+
+// 旧库迁移:去掉文件名的 alarm- 前缀。音频改名时同名封面(相同主名)一起改;重名自动加 _N;
+// 启动时执行一次,旧版库无缝升级
+async function migrateStripAlarmPrefix() {
+  try {
+    const dir = soundsPath();
+    await fs.mkdir(dir, { recursive: true });
+    const files = await fs.readdir(dir);
+    const set = new Set(files);
+    const audioExts = /\.(mp3|wav|ogg|m4a|flac|aac|ape)$/i;
+    const imgExts = /\.(jpe?g|png|webp|gif)$/i;
+    const uniqueName = (stem: string, ext: string) => { let name = `${stem}${ext}`, i = 1; while (set.has(name)) name = `${stem}_${i++}${ext}`; return name; };
+    const move = async (from: string, to: string) => { await fs.rename(path.join(dir, from), path.join(dir, to)); set.delete(from); set.add(to); };
+    for (const f of files.filter(x => x.startsWith('alarm-') && audioExts.test(x))) {
+      const ext = path.extname(f);
+      const oldStem = f.slice(0, f.length - ext.length); // alarm-foo
+      const base = oldStem.slice(6);
+      if (!base) continue;
+      const newStem = set.has(`${base}${ext}`) ? uniqueName(base, ext).slice(0, -ext.length) : base;
+      try { await move(f, newStem + ext); } catch { continue; /* 文件被占用则跳过,下次启动再试 */ }
+      for (const g of files) {
+        if (!imgExts.test(g) || !set.has(g)) continue;
+        const gExt = path.extname(g);
+        if (g.slice(0, g.length - gExt.length) !== oldStem) continue;
+        const coverTarget = set.has(newStem + gExt) ? uniqueName(newStem, gExt) : newStem + gExt;
+        try { await move(g, coverTarget); } catch { /* 封面改名失败不影响音频 */ }
+      }
+    }
+    // 孤儿封面:无对应音频、仍带前缀的图片
+    for (const g of files.filter(x => x.startsWith('alarm-') && imgExts.test(x) && set.has(x))) {
+      const ext = path.extname(g);
+      const base = g.slice(6, g.length - ext.length);
+      if (!base) continue;
+      try { await move(g, set.has(`${base}${ext}`) ? uniqueName(base, ext) : `${base}${ext}`); } catch { /* 跳过 */ }
+    }
+  } catch { /* 目录不存在等:静默跳过 */ }
 }
 
 function sniffImageExt(buf: Buffer): string | null {
@@ -165,9 +208,25 @@ function createMusicWindow() {
   musicWin = new BrowserWindow({
     width: 1000, height: 760, title: '音乐下载',
     parent: win || undefined, backgroundColor: '#ffffff',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { ...TITLE_BAR, color: '#ffffff' },
     webPreferences: { contextIsolation: true, nodeIntegration: false }
   });
   musicWin.loadURL(MUSIC_SITE);
+  // 给第三方页面顶部注入一条透明拖拽区(避开右上角 3 个系统按钮),让标题栏可拖拽
+  musicWin.webContents.on('did-finish-load', () => {
+    if (!musicWin || musicWin.isDestroyed()) return;
+    musicWin.webContents.insertCSS(`
+      body::before {
+        content: '';
+        position: fixed;
+        top: 0; left: 0; right: 140px;
+        height: ${TITLE_BAR.height}px;
+        -webkit-app-region: drag;
+        z-index: 2147483647;
+      }
+    `).catch(() => { /* 页面可能已跳转 */ });
+  });
   // 禁止网站弹出任何新窗口，一律在当前内嵌窗口内打开
   musicWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) musicWin?.loadURL(url);
@@ -224,14 +283,126 @@ function createMusicWindow() {
   });
 }
 
+// 统一标题栏:隐藏系统标题栏文字区,保留原生最小化/最大化/关闭按钮(overlay),
+// 按钮底色与应用背景一致,深灰图标。内容区需在顶部预留 -webkit-app-region: drag 的拖拽条。
+const TITLE_BAR = { color: '#00000000', symbolColor: '#5a5e73', height: 36 };
+
+// 点击关闭按钮时询问:最小化到托盘(闹钟照常响)还是直接退出;可记住选择(持久化,重启仍生效)
+const closePrefPath = () => path.join(app.getPath('userData'), 'close-pref.json');
+async function loadClosePref() {
+  try {
+    const saved = JSON.parse(await fs.readFile(closePrefPath(), 'utf8'));
+    if (saved?.action === 'minimize' || saved?.action === 'exit') closeAction = saved.action;
+  } catch { /* 首次运行或文件损坏:保持每次询问 */ }
+}
+// 关闭行为:null=每次询问; 'minimize'=最小化到托盘; 'exit'=直接退出。托盘设置与关闭弹窗共用
+async function applyClosePref(action: 'minimize' | 'exit' | null) {
+  closeAction = action;
+  try {
+    if (action) await fs.writeFile(closePrefPath(), JSON.stringify({ action }, null, 2), 'utf8');
+    else await fs.rm(closePrefPath(), { force: true }); // 恢复"每次询问"就删掉记录
+  } catch { /* 写不进则本次会话内仍生效 */ }
+}
+async function handleCloseRequest(): Promise<void> {
+  if (quitting) { win?.destroy(); return; }
+  if (closeAction === 'minimize') { win?.hide(); return; }
+  if (closeAction === 'exit') { quitting = true; app.quit(); return; }
+  const { response, checkboxChecked } = await dialog.showMessageBox(win!, {
+    type: 'question',
+    title: '关闭小小闹钟',
+    message: '要最小化到系统托盘，还是直接退出？',
+    detail: '最小化后闹钟会在后台照常响起，可从托盘图标重新打开窗口。',
+    buttons: ['最小化到托盘', '直接退出', '取消'],
+    defaultId: 0,
+    cancelId: 2,
+    checkboxLabel: '记住我的选择，不再询问',
+    noLink: true
+  });
+  if (response === 2) return; // 取消
+  if (checkboxChecked) await applyClosePref(response === 0 ? 'minimize' : 'exit');
+  if (response === 0) win?.hide();
+  else { quitting = true; app.quit(); }
+}
+
+// 关于对话框:版本、作者、GitHub、运行时信息,可直接跳转仓库
+async function showAbout() {
+  const { response } = await dialog.showMessageBox({
+    type: 'info',
+    title: '关于小小闹钟',
+    message: `小小闹钟 v${app.getVersion()}`,
+    detail: `一个专注、简洁的桌面闹钟\n\n作者：allthetimes\nGitHub：${GITHUB_URL}\n\nElectron ${process.versions.electron} · Chromium ${process.versions.chrome} · Node ${process.versions.node}`,
+    buttons: ['访问 GitHub 仓库', '关闭'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  });
+  if (response === 0) void shell.openExternal(GITHUB_URL);
+}
+
+// 设置窗口:左侧栏目导航(通用/铃声库/关于),加载独立入口 settings.html
+function createSettingsWindow() {
+  if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); return; }
+  settingsWin = new BrowserWindow({
+    width: 640, height: 470, resizable: false, maximizable: false,
+    title: '设置', parent: win || undefined, backgroundColor: '#f7f8fc',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: TITLE_BAR,
+    webPreferences: { preload: path.join(__dirname, '../preload/preload.js'), contextIsolation: true, nodeIntegration: false }
+  });
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devUrl) settingsWin.loadURL(`${devUrl.replace(/\/$/, '')}/settings.html`);
+  else settingsWin.loadFile(path.join(__dirname, '../../dist/settings.html'));
+  settingsWin.on('closed', () => { settingsWin = null; });
+}
+
+function createTray() {
+  // 托盘点击恢复窗口,右键菜单可彻底退出。图标: 打包后取 resources 下的 icon.ico,
+  // 开发态退回 electron 默认(打包时 electron-builder 会把 build/icon.ico 放进 resources)
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.ico')
+    : path.join(app.getAppPath(), 'build', 'icon.ico');
+  tray = new Tray(iconPath);
+  tray.setToolTip(`小小闹钟 v${app.getVersion()}`);
+  tray.on('click', () => {
+    if (!win || win.isDestroyed()) createWindow();
+    else { win.show(); win.focus(); }
+  });
+  // 菜单按需构建:状态实时读取,切换后重建菜单保持同步
+  const buildTrayMenu = () => Menu.buildFromTemplate([
+    { label: '打开小小闹钟', click: () => { if (!win || win.isDestroyed()) createWindow(); else { win.show(); win.focus(); } } },
+    { type: 'separator' },
+    { label: '设置…', click: () => createSettingsWindow() },
+    { type: 'separator' },
+    { label: 'GitHub 仓库', click: () => { void shell.openExternal(GITHUB_URL); } },
+    { label: `关于小小闹钟（v${app.getVersion()}）`, click: () => { void showAbout(); } },
+    { type: 'separator' },
+    { label: '退出', click: () => { quitting = true; app.quit(); } }
+  ]);
+  tray.setContextMenu(buildTrayMenu());
+}
+
 function createWindow() {
   Menu.setApplicationMenu(null);
-  win = new BrowserWindow({ width: 480, height: 880, minWidth: 420, minHeight: 640, backgroundColor: '#f7f8fc', webPreferences: { preload: path.join(__dirname, '../preload/preload.js'), contextIsolation: true, nodeIntegration: false } });
+  win = new BrowserWindow({
+    width: 480, height: 880, minWidth: 420, minHeight: 640,
+    backgroundColor: '#f7f8fc',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: TITLE_BAR,
+    webPreferences: { preload: path.join(__dirname, '../preload/preload.js'), contextIsolation: true, nodeIntegration: false }
+  });
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) win.loadURL(devUrl); else win.loadFile(path.join(__dirname, '../../dist/index.html'));
+  // 点关闭按钮 → 询问最小化/退出;程序发起的退出(app.quit)走 destroy 不再询问
+  win.on('close', (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    void handleCloseRequest();
+  });
 }
 
 app.whenReady().then(async () => {
+  await loadClosePref();
+  await migrateStripAlarmPrefix();
   const soundsDir = soundsPath();
 
   protocol.handle(SOUND_SCHEME, async (request) => {
@@ -251,11 +422,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('sounds:list', async () => {
     try {
       const files = await fs.readdir(soundsDir);
-      // 封面图 alarm-<stem>.<img> 与音频 alarm-<stem>.<audio> 按 stem 对应
+      // 封面图 <stem>.<img> 与音频 <stem>.<audio> 按主名对应(旧版 alarm- 前缀文件已在启动时迁移)
       const covers = new Map<string, string>();
       for (const f of files) {
-        const m = f.match(/^alarm-(.+)\.(jpe?g|png|webp|gif)$/i);
-        if (m) covers.set(m[1].toLowerCase(), soundURL(f));
+        const m = f.match(/^(.+)\.(jpe?g|png|webp|gif)$/i);
+        if (m) covers.set(m[1].replace(/^alarm-/i, '').toLowerCase(), soundURL(f));
       }
       return files
         .filter(f => /\.(mp3|wav|ogg|m4a|flac)$/i.test(f))
@@ -283,8 +454,7 @@ app.whenReady().then(async () => {
       const ext = path.extname(String(oldName)) || '.mp3';
       let safeNew = String(newName).replace(/[\\/:*?"<>|]/g, '_').trim();
       if (!safeNew) return null;
-      // 保证 alarm- 前缀和原后缀完整
-      if (!safeNew.startsWith('alarm-')) safeNew = `alarm-${safeNew}`;
+      // 保证原后缀完整
       if (!safeNew.toLowerCase().endsWith(ext.toLowerCase())) safeNew = `${safeNew}${ext}`;
       const from = path.join(soundsDir, path.basename(String(oldName)));
       const to = path.join(soundsDir, safeNew);
@@ -331,15 +501,40 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('music:site', async () => { await shell.openExternal(MUSIC_SITE); });
+  // 设置窗口:读取/修改配置
+  // 登录项读写统一带 path/args:开发态注册 electron.exe + 应用路径以启动本应用;
+  // 读取时的参数必须与写入一致,否则 openAtLogin 判断会失配
+  const launchItemOptions = () => ({ path: process.execPath, args: app.isPackaged ? [] : [app.getAppPath()] });
+  const autoLaunchOn = () => app.getLoginItemSettings(launchItemOptions()).openAtLogin;
+  ipcMain.handle('settings:get', async () => ({
+    closeAction,
+    openAtLogin: autoLaunchOn(),
+    version: app.getVersion(),
+    author: 'allthetimes',
+    github: GITHUB_URL,
+    runtime: { electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node },
+    soundsDir: soundsPath(),
+    soundsCount: (await fs.readdir(soundsPath()).catch(() => [] as string[])).filter(f => /\.(mp3|wav|ogg|m4a|flac)$/i.test(f)).length
+  }));
+  ipcMain.handle('settings:setClose', (_event, action: unknown) => applyClosePref(action === 'minimize' || action === 'exit' ? action : null));
+  ipcMain.handle('settings:setAutoLaunch', (_event, on: unknown) => {
+    app.setLoginItemSettings({ openAtLogin: !!on, ...launchItemOptions() });
+    return autoLaunchOn();
+  });
+  ipcMain.handle('settings:openSoundsDir', async () => { await fs.mkdir(soundsPath(), { recursive: true }); return shell.openPath(soundsPath()); });
+  ipcMain.handle('app:openExternal', (_event, url: unknown) => {
+    const u = String(url);
+    if (/^https:\/\/([a-z0-9.-]+\.)?github\.com\//i.test(u)) return shell.openExternal(u); // 白名单:仅允许 GitHub 链接
+  });
   ipcMain.handle('audio:pick', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '音频文件', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac'] }] });
     if (result.canceled || !result.filePaths[0]) return null;
     const source = result.filePaths[0];
     const ext = path.extname(source);
     const stem = path.basename(source, ext).replace(/[\\/:*?"<>|]/g, '_');
-    let filename = `alarm-${stem}${ext}`;
+    let filename = `${stem}${ext}`;
     let index = 1;
-    while (await exists(path.join(soundsDir, filename))) filename = `alarm-${stem}_${index++}${ext}`;
+    while (await exists(path.join(soundsDir, filename))) filename = `${stem}_${index++}${ext}`;
     await fs.mkdir(soundsDir, { recursive: true });
     const target = path.join(soundsDir, filename);
     await fs.copyFile(source, target);
@@ -347,6 +542,11 @@ app.whenReady().then(async () => {
     return { path: soundURL(filename), name: filename };
   });
   createWindow();
+  createTray();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', () => { quitting = true; });
+app.on('window-all-closed', () => {
+  // 托盘常驻:窗口全部隐藏/销毁时不清退出进程,保持闹钟后台运行
+  if (process.platform !== 'darwin' && quitting) app.quit();
+});

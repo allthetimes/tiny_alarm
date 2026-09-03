@@ -1,7 +1,5 @@
-import type { Alarm, PickedAudio, Repeat, HolidayConfig } from './types';
+import type { Alarm, Repeat, HolidayConfig } from './types';
 import './style.css';
-
-declare global { interface Window { alarmAPI: { load: () => Promise<Alarm[]>; save: (alarms: Alarm[]) => Promise<void>; pickAudio: () => Promise<PickedAudio>; loadHolidays: () => Promise<HolidayConfig>; openMusicSite: () => Promise<void>; openMusicApp: () => Promise<void>; onSoundsUpdated: (cb: () => void) => void; onDownloadBefore: (cb: (token: string, name: string) => void) => void; onDownloadStarted: (cb: (token: string, name: string) => void) => void; onDownloadProgress: (cb: (token: string, name: string, received: number, total: number) => void) => void; onDownloadDone: (cb: (token: string, final: string) => void) => void; onDownloadFailed: (cb: (token: string) => void) => void; confirmDownload: (token: string, name: string) => Promise<string | null>; cancelDownload: (token: string) => Promise<boolean>; listSounds: () => Promise<{ path: string; name: string; cover?: string }[]>; renameSound: (oldName: string, newName: string) => Promise<{ path: string; name: string } | null>; deleteSound: (name: string) => Promise<boolean> } } }
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 const repeats: { key: Repeat; label: string }[] = [
   { key: 'once', label: '仅一次' },
@@ -29,10 +27,19 @@ let downloadState: { name: string; received: number; total: number } | null = nu
 let freshSound: string | null = null;
 audio.volume = volume;
 const app = document.querySelector<HTMLDivElement>('#app')!;
-app.innerHTML = `<div class="phone"><header class="top"><div class="brand"><div class="brand-mark">✦</div><strong>小小闹钟</strong></div><div class="clock"><strong id="clock">--:--</strong><span id="date">----</span></div></header><div class="hero"><p class="hi">早上好</p><p class="active"><i></i><span id="active-label">0 个闹钟正在运行</span></p></div><section id="alarm-list" class="alarm-list"></section><section class="empty" id="empty"><div class="empty-icon">◷</div><h2>还没有闹钟</h2><p>创建一个闹钟，开启你的专注时刻</p></section><div class="dock"><div class="dock-side"><label class="volume"><span>♫</span><input id="volume" type="range" min="0" max="100" value="72" aria-label="音量"></label><button class="icon-btn" id="sound-lib">我的铃声</button></div><button class="fab" id="add-btn">＋ 新建</button></div></div><div class="modal-backdrop hidden" id="modal"><div class="modal"><button class="close" id="close">×</button><h2 id="modal-title">新建闹钟</h2><label>时间<div class="time-picker"><input id="time-input" type="time" value="08:00"></div></label><label>标签<input id="label-input" type="text" placeholder="例如：晨读"></label><label>重复<div class="repeat-chips" id="repeat-chips">${repeats.map(r => `<button data-repeat="${r.key}">${r.label}</button>`).join('')}</div><div class="days" id="days">${weekdays.map((d, i) => `<button data-day="${i}">${d}</button>`).join('')}</div></label><div class="settings-grid"><label>响铃时长<select id="ring-seconds"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label><label>再响间隔<select id="snooze-minutes"><option value="0">不再响</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option></select></label><label>最多再响<select id="snooze-count"><option value="0">0 次</option><option value="1">1 次</option><option value="3" selected>3 次</option><option value="5">5 次</option></select></label></div><label>铃声<div class="sound-row"><button class="sound-select" id="sound-btn">♫ <span id="sound-name">系统默认铃声</span></button><button class="test-btn" id="test-sound">试听</button></div></label><button class="primary full" id="save-btn">保存闹钟</button></div></div><div class="modal-backdrop hidden" id="sound-lib-modal"><div class="modal"><button class="close" id="lib-close">×</button><h2 id="lib-title">我的铃声</h2><div class="lib-list" id="lib-list"></div><button class="primary full" id="lib-import">＋ 导入铃声</button><button class="ghost full" id="lib-site">🌐 内嵌打开音乐网站</button><small class="lib-hint">在内嵌窗口下载的音频会自动加入铃声库</small></div></div><div class="modal-backdrop hidden" id="rename-modal"><div class="modal small"><h2 id="rename-title">重命名铃声</h2><p class="rename-format" id="rename-format">alarm-（新名称）.mp3</p><div class="rename-box"><span class="rename-fixed" id="rename-prefix">alarm-</span><input id="rename-input" type="text" placeholder="新名称"><span class="rename-fixed" id="rename-ext">.mp3</span></div><div class="rename-actions"><button class="ghost" id="rename-cancel">取消</button><button class="primary" id="rename-ok">确定</button></div></div></div><div class="ring-overlay hidden" id="ring-overlay"><div class="ring-panel"><div class="ring-icon">♬</div><p class="ring-kicker">小小闹钟提醒</p><h2 id="ring-label">时间到了</h2><p>请长按空格键 5 秒关闭本次闹钟</p><div class="progress-track"><div id="space-progress"></div></div><small>已按住 <span id="hold-seconds">0</span> / 5 秒</small></div></div>`;
+app.innerHTML = `<div class="phone"><div class="titlebar-drag"></div><header class="top"><div class="brand"><div class="brand-mark">✦</div><strong>小小闹钟</strong></div><div class="clock"><strong id="clock">--:--</strong><span id="date">----</span></div></header><div class="hero"><p class="hi" id="greeting">早上好</p><p class="active"><i></i><span id="active-label">0 个闹钟正在运行</span></p></div><section id="alarm-list" class="alarm-list"></section><section class="empty" id="empty"><div class="empty-icon">◷</div><h2>还没有闹钟</h2><p>创建一个闹钟，开启你的专注时刻</p></section><div class="dock"><div class="dock-side"><label class="volume"><span>♫</span><input id="volume" type="range" min="0" max="100" value="72" aria-label="音量"></label><button class="icon-btn" id="sound-lib">我的铃声</button></div><button class="fab" id="add-btn">＋ 新建</button></div></div><div class="modal-backdrop hidden" id="modal"><div class="modal"><button class="close" id="close">×</button><h2 id="modal-title">新建闹钟</h2><label>时间<div class="time-picker" id="time-picker"><div class="tp-col"><button class="tp-btn" data-step="hour" data-dir="1" title="加一小时">▲</button><div class="tp-val" data-wheel="hour" id="tp-hour">08</div><button class="tp-btn" data-step="hour" data-dir="-1" title="减一小时">▼</button></div><div class="tp-colon">:</div><div class="tp-col"><button class="tp-btn" data-step="minute" data-dir="1" title="加一分钟">▲</button><div class="tp-val" data-wheel="minute" id="tp-minute">00</div><button class="tp-btn" data-step="minute" data-dir="-1" title="减一分钟">▼</button></div><span class="tp-icon">◷</span></div><input id="time-input" type="hidden" value="08:00"></label><label>标签<input id="label-input" type="text" placeholder="例如：晨读"></label><label>重复<div class="repeat-chips" id="repeat-chips">${repeats.map(r => `<button data-repeat="${r.key}">${r.label}</button>`).join('')}</div><div class="days" id="days">${weekdays.map((d, i) => `<button data-day="${i}">${d}</button>`).join('')}</div></label><div class="settings-grid"><label>响铃时长<select id="ring-seconds"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label><label>再响间隔<select id="snooze-minutes"><option value="0">不再响</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option></select></label><label>最多再响<select id="snooze-count"><option value="0">0 次</option><option value="1">1 次</option><option value="3" selected>3 次</option><option value="5">5 次</option></select></label></div><label>铃声<div class="sound-row"><button class="sound-select" id="sound-btn">♫ <span id="sound-name">系统默认铃声</span></button><button class="test-btn" id="test-sound">试听</button></div></label><button class="primary full" id="save-btn">保存闹钟</button></div></div><div class="modal-backdrop hidden" id="sound-lib-modal"><div class="modal"><button class="close" id="lib-close">×</button><h2 id="lib-title">我的铃声</h2><div class="lib-list" id="lib-list"></div><button class="primary full" id="lib-import">＋ 导入铃声</button><button class="ghost full" id="lib-site">🌐 内嵌打开音乐网站</button><small class="lib-hint">在内嵌窗口下载的音频会自动加入铃声库</small></div></div><div class="modal-backdrop hidden" id="rename-modal"><div class="modal small"><h2 id="rename-title">重命名铃声</h2><p class="rename-format" id="rename-format">（新名称）.mp3</p><div class="rename-box"><span class="rename-fixed hidden" id="rename-prefix"></span><input id="rename-input" type="text" placeholder="新名称"><span class="rename-fixed" id="rename-ext">.mp3</span></div><div class="rename-actions"><button class="ghost" id="rename-cancel">取消</button><button class="primary" id="rename-ok">确定</button></div></div></div><div class="ring-overlay hidden" id="ring-overlay"><div class="ring-panel"><div class="ring-icon">♬</div><p class="ring-kicker">小小闹钟提醒</p><h2 id="ring-label">时间到了</h2><p>请长按空格键 5 秒关闭本次闹钟</p><div class="progress-track"><div id="space-progress"></div></div><small>已按住 <span id="hold-seconds">0</span> / 5 秒</small></div></div>`;
 const $ = <T extends Element>(s: string) => document.querySelector<T>(s)!;
 const pad = (n: number) => String(n).padStart(2, '0');
 const todayKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// 按时间段动态问候
+function greeting(h: number) {
+  if (h < 5) return '夜深了';
+  if (h < 11) return '早上好';
+  if (h < 13) return '中午好';
+  if (h < 18) return '下午好';
+  if (h < 23) return '晚上好';
+  return '夜深了';
+}
 
 function matchDay(a: Alarm, now: Date): boolean {
   const day = (now.getDay() + 6) % 7; // 0=周一
@@ -67,7 +74,7 @@ function nextRing(a: Alarm): string {
   return '不重复';
 }
 
-function tick() { const now = new Date(); $('#clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`; $('#date').textContent = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }); checkAlarms(now); }
+function tick() { const now = new Date(); $('#clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`; $('#date').textContent = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }); $('#greeting').textContent = greeting(now.getHours()); checkAlarms(now); }
 function stopRinging() {
   if (ringTimer) window.clearTimeout(ringTimer);
   if (retryTimer) window.clearTimeout(retryTimer);
@@ -75,8 +82,8 @@ function stopRinging() {
   audio.pause(); audio.currentTime = 0;
   ringingAlarm = null; retriesLeft = 0;
   $('#ring-overlay').classList.add('hidden');
-  $('#space-progress').style.width = '0%';
-  $('#hold-seconds').textContent = '0';
+  ($('#space-progress') as HTMLElement).style.width = '0%';
+  ($('#hold-seconds') as HTMLElement).textContent = '0';
 }
 function playRing(a: Alarm) {
   ringingAlarm = a;
@@ -99,14 +106,14 @@ function beginHold() {
   holdStarted = Date.now();
   holdTimer = window.setInterval(() => {
     const seconds = Math.min(5, (Date.now() - holdStarted) / 1000);
-    $('#hold-seconds').textContent = seconds.toFixed(1);
-    $('#space-progress').style.width = `${seconds * 20}%`;
+    ($('#hold-seconds') as HTMLElement).textContent = seconds.toFixed(1);
+    ($('#space-progress') as HTMLElement).style.width = `${seconds * 20}%`;
     if (seconds >= 5) { if (holdTimer) window.clearInterval(holdTimer); holdTimer = null; stopRinging(); }
   }, 50);
 }
 function endHold() {
   if (holdTimer) window.clearInterval(holdTimer);
-  holdTimer = null; $('#space-progress').style.width = '0%'; $('#hold-seconds').textContent = '0';
+  holdTimer = null; ($('#space-progress') as HTMLElement).style.width = '0%'; ($('#hold-seconds') as HTMLElement).textContent = '0';
 }
 
 function checkAlarms(now: Date) {
@@ -136,7 +143,7 @@ let selectedRepeat: Repeat = 'once';
 function syncDaysVisible() { $('#days').classList.toggle('hidden', selectedRepeat !== 'custom'); }
 function openModal(alarm?: Alarm) {
   editingId = alarm?.id || null; $('#modal').classList.remove('hidden'); $('#modal-title').textContent = alarm ? '编辑闹钟' : '新建闹钟'; $('#save-btn').textContent = alarm ? '保存修改' : '保存闹钟';
-  ($('#time-input') as HTMLInputElement).value = alarm?.time || '08:00';
+  setTimeValue(alarm?.time || '08:00');
   ($('#label-input') as HTMLInputElement).value = alarm?.label || '';
   selectedSound = alarm ? { path: alarm.soundPath, name: alarm.soundName || '系统默认铃声' } : { path: '', name: '系统默认铃声' }; $('#sound-name').textContent = selectedSound.name;
   ($('#ring-seconds') as HTMLSelectElement).value = String(alarm?.ringSeconds || 30);
@@ -149,19 +156,38 @@ function openModal(alarm?: Alarm) {
 }
 function closeModal() { stopPreview(); $('#modal').classList.add('hidden'); editingId = null; }
 function stopPreview() { if (previewTimer) window.clearTimeout(previewTimer); previewTimer = null; audio.pause(); audio.currentTime = 0; }
+// 铃声弹窗两种模式: picker=新建/编辑闹钟里的纯选择列表; manage=主界面「我的铃声」完整管理
+let libMode: 'picker' | 'manage' = 'manage';
+function openSoundLib(mode: 'picker' | 'manage') {
+  libMode = mode;
+  $('#lib-title').textContent = mode === 'picker' ? '选择铃声' : '我的铃声';
+  $('#lib-import').classList.toggle('hidden', mode === 'picker');
+  $('#lib-site').classList.toggle('hidden', mode === 'picker');
+  document.querySelector('.lib-hint')?.classList.toggle('hidden', mode === 'picker');
+  renderLib().then(() => $('#sound-lib-modal').classList.remove('hidden'));
+}
 async function renderLib() {
   const sounds = await window.alarmAPI.listSounds();
   const list = $('#lib-list');
+  const manage = libMode === 'manage';
   const progress = (() => {
-    if (!downloadState) return '';
+    if (!manage || !downloadState) return '';
     const { name, received, total } = downloadState;
     const pct = total > 0 ? Math.min(100, Math.round(received / total * 100)) : 0;
     const label = total > 0 ? `${pct}%` : `${(received / 1048576).toFixed(1)} MB`;
     return `<div class="dl-progress" id="dl-progress-row"><p>⬇ 正在下载 ${name}</p><div class="dl-track"><div id="dl-bar" style="width:${pct}%"></div></div><small id="dl-pct">${label}</small></div>`;
   })();
-  list.innerHTML = [progress, `<div class="lib-item ${selectedSound.path ? '' : 'selected'}"><button class="lib-pick" data-path="" data-name="系统默认铃声"><span class="lib-name">系统默认铃声</span></button><button class="lib-test" data-test="" data-testname="系统默认铃声" title="试听">▶</button></div>`]
-    .concat(sounds.map(s => `<div class="lib-item ${selectedSound.path === s.path ? 'selected' : ''}${s.name === freshSound ? ' fresh' : ''}"><button class="lib-pick" data-path="${s.path}" data-name="${s.name}">${s.cover ? `<img class="lib-cover" src="${s.cover}" alt="">` : '<span class="lib-note">♫</span>'}<span class="lib-name">${s.name}</span></button><button class="lib-test" data-test="${s.path}" data-testname="${s.name}" title="试听">▶</button><button class="lib-ren" data-ren="${s.name}" title="重命名">✎</button><button class="lib-del" data-del="${s.name}" title="删除">✕</button></div>`)).join('');
-  list.querySelectorAll<HTMLButtonElement>('.lib-pick').forEach(b => b.addEventListener('click', () => { selectedSound = { path: b.dataset.path || '', name: b.dataset.name || '系统默认铃声' }; $('#sound-name').textContent = selectedSound.name; renderLib(); }));
+  const actions = (s: { path: string; name: string }) => manage
+    ? `<button class="lib-test" data-test="${s.path}" data-testname="${s.name}" title="试听">▶</button><button class="lib-ren" data-ren="${s.name}" title="重命名">✎</button><button class="lib-del" data-del="${s.name}" title="删除">✕</button>`
+    : '';
+  list.innerHTML = [progress, `<div class="lib-item ${selectedSound.path ? '' : 'selected'}"><button class="lib-pick" data-path="" data-name="系统默认铃声"><span class="lib-name">系统默认铃声</span></button>${actions({ path: '', name: '系统默认铃声' })}</div>`]
+    .concat(sounds.map(s => `<div class="lib-item ${selectedSound.path === s.path ? 'selected' : ''}${manage && s.name === freshSound ? ' fresh' : ''}"><button class="lib-pick" data-path="${s.path}" data-name="${s.name}">${s.cover ? `<img class="lib-cover" src="${s.cover}" alt="">` : '<span class="lib-note">♫</span>'}<span class="lib-name">${s.name}</span></button>${actions(s)}</div>`)).join('');
+  list.querySelectorAll<HTMLButtonElement>('.lib-pick').forEach(b => b.addEventListener('click', () => {
+    selectedSound = { path: b.dataset.path || '', name: b.dataset.name || '系统默认铃声' };
+    $('#sound-name').textContent = selectedSound.name;
+    if (libMode === 'picker') { stopPreview(); $('#sound-lib-modal').classList.add('hidden'); }
+    else renderLib();
+  }));
   list.querySelectorAll<HTMLButtonElement>('.lib-test').forEach(b => b.addEventListener('click', () => testSound(b.dataset.test || '', b.dataset.testname || '')));
   list.querySelectorAll<HTMLButtonElement>('.lib-ren').forEach(b => b.addEventListener('click', () => openRename(b.dataset.ren!)));
   list.querySelectorAll<HTMLButtonElement>('.lib-del').forEach(b => b.addEventListener('click', async () => { if (!confirm(`确定删除铃声「${b.dataset.del}」吗？`)) return; await window.alarmAPI.deleteSound(b.dataset.del!); if (selectedSound.name === b.dataset.del) { selectedSound = { path: '', name: '系统默认铃声' }; $('#sound-name').textContent = selectedSound.name; } renderLib(); }));
@@ -191,12 +217,13 @@ function openRename(name: string, downloadToken = '') {
   $('#rename-title').textContent = downloadToken ? '命名并下载铃声' : '重命名铃声';
   renameExt = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '.mp3';
   const stem = name.slice(0, name.length - renameExt.length);
-  renamePrefix = 'alarm-';
+  renamePrefix = '';
   const middle = stem.startsWith('alarm-') ? stem.slice(6) : stem;
   ($('#rename-input') as HTMLInputElement).value = middle;
   ($('#rename-input') as HTMLInputElement).readOnly = false;
-  $('#rename-format').textContent = `${renamePrefix}（新名称）${renameExt}`;
+  $('#rename-format').textContent = `（新名称）${renameExt}`;
   $('#rename-prefix').textContent = renamePrefix;
+  $('#rename-prefix').classList.add('hidden');
   $('#rename-ext').textContent = renameExt;
   $('#rename-modal').classList.remove('hidden');
   ($('#rename-input') as HTMLInputElement).focus();
@@ -205,17 +232,53 @@ function closeRename() { $('#rename-modal').classList.add('hidden'); renamingSou
 async function cancelPendingDownload() { if (pendingDownloadToken) await window.alarmAPI.cancelDownload(pendingDownloadToken); closeRename(); }
 
 setInterval(tick, 1000); tick();
+// 自定义时间选择器:▲▼(长按连加)或滚轮调节,时 0-23 / 分 0-59 循环;值同步进隐藏 input 供保存
+let tpHour = 8, tpMinute = 0;
+function renderTimePicker() {
+  ($('#tp-hour') as HTMLElement).textContent = pad(tpHour);
+  ($('#tp-minute') as HTMLElement).textContent = pad(tpMinute);
+  ($('#time-input') as HTMLInputElement).value = `${pad(tpHour)}:${pad(tpMinute)}`;
+}
+function setTimeValue(v: string) {
+  const [h, m] = v.split(':').map(Number);
+  tpHour = Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 8;
+  tpMinute = Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0;
+  renderTimePicker();
+}
+function stepTime(part: 'hour' | 'minute', dir: number) {
+  if (part === 'hour') tpHour = (tpHour + dir + 24) % 24;
+  else tpMinute = (tpMinute + dir + 60) % 60;
+  renderTimePicker();
+}
+function bindTimeSteppers() {
+  document.querySelectorAll<HTMLButtonElement>('.tp-btn').forEach(b => {
+    const part = (b.dataset.step as 'hour' | 'minute'), dir = Number(b.dataset.dir);
+    let delay: number | undefined, rep: number | undefined;
+    const stop = () => { window.clearTimeout(delay); window.clearInterval(rep); delay = rep = undefined; };
+    b.addEventListener('mousedown', () => {
+      stepTime(part, dir);
+      delay = window.setTimeout(() => { rep = window.setInterval(() => stepTime(part, dir), 80); }, 420);
+    });
+    ['mouseup', 'mouseleave', 'blur'].forEach(ev => b.addEventListener(ev, stop));
+  });
+  $<HTMLElement>('#time-picker').addEventListener('wheel', e => {
+    e.preventDefault();
+    const seg = (e.target as HTMLElement).closest('[data-wheel]')?.getAttribute('data-wheel');
+    if (seg === 'hour' || seg === 'minute') stepTime(seg, e.deltaY < 0 ? 1 : -1);
+  }, { passive: false });
+}
+bindTimeSteppers();
 $('#add-btn').addEventListener('click', () => openModal()); $('#close').addEventListener('click', closeModal);
 document.querySelectorAll<HTMLButtonElement>('#repeat-chips button').forEach(b => b.addEventListener('click', () => { selectedRepeat = b.dataset.repeat as Repeat; document.querySelectorAll<HTMLButtonElement>('#repeat-chips button').forEach(x => x.classList.toggle('selected', x === b)); syncDaysVisible(); }));
 document.querySelectorAll<HTMLButtonElement>('#days button').forEach(b => b.addEventListener('click', () => b.classList.toggle('selected')));
-$('#sound-btn').addEventListener('click', () => { renderLib().then(() => $('#sound-lib-modal').classList.remove('hidden')); });
+$('#sound-btn').addEventListener('click', () => openSoundLib('picker'));
 $('#test-sound').addEventListener('click', async () => { if (previewTimer) window.clearTimeout(previewTimer); audio.pause(); audio.currentTime = 0; audio.volume = volume; if (selectedSound.path) { audio.src = selectedSound.path; try { await audio.play(); } catch { const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); gain.gain.value = volume; osc.connect(gain).connect(ctx.destination); osc.frequency.value = 660; osc.start(); osc.stop(ctx.currentTime + .25); } } else { const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); gain.gain.value = volume; osc.connect(gain).connect(ctx.destination); osc.frequency.value = 660; osc.start(); osc.stop(ctx.currentTime + .25); } previewTimer = window.setTimeout(() => { audio.pause(); audio.currentTime = 0; previewTimer = null; }, 10000); });
 $('#volume').addEventListener('input', e => { volume = Number((e.target as HTMLInputElement).value) / 100; audio.volume = volume; });
 const volumeInput = $('#volume') as HTMLInputElement;
 const setVolume = (v: number) => { const clamped = Math.max(0, Math.min(100, Math.round(v))); volumeInput.value = String(clamped); volume = clamped / 100; audio.volume = volume; };
 volumeInput.addEventListener('wheel', e => { e.preventDefault(); setVolume(Number(volumeInput.value) + (e.deltaY < 0 ? 5 : -5)); }, { passive: false });
-$('#sound-lib').addEventListener('click', () => { renderLib().then(() => $('#sound-lib-modal').classList.remove('hidden')); });
-$('#lib-close').addEventListener('click', () => { stopPreview(); $('#sound-lib-modal').classList.add('hidden'); freshSound = null; });
+$('#sound-lib').addEventListener('click', () => openSoundLib('manage'));
+$('#lib-close').addEventListener('click', () => { stopPreview(); $('#sound-lib-modal').classList.add('hidden'); freshSound = null; libMode = 'manage'; });
 $('#test-sound').addEventListener('click', () => testSound(selectedSound.path, selectedSound.name));
 $('#lib-site').addEventListener('click', () => { window.alarmAPI.openMusicApp(); });
 $('#rename-ok').addEventListener('click', async () => {
@@ -242,10 +305,11 @@ $('#rename-ok').addEventListener('click', async () => {
   }
 });
 $('#rename-cancel').addEventListener('click', async () => { await cancelPendingDownload(); });
-$('#rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') ($('#rename-ok') as HTMLButtonElement).click(); if (e.key === 'Escape') cancelPendingDownload(); });
+$<HTMLInputElement>('#rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') ($('#rename-ok') as HTMLButtonElement).click(); if (e.key === 'Escape') cancelPendingDownload(); });
 window.alarmAPI.onSoundsUpdated(() => { if (!$('#sound-lib-modal').classList.contains('hidden')) renderLib(); });
 window.alarmAPI.onDownloadBefore((token, name) => {
   downloadState = { name, received: 0, total: 0 };
+  libMode = 'manage';
   renderLib().then(() => { $('#sound-lib-modal').classList.remove('hidden'); openRename(name, token); });
 });
 window.alarmAPI.onDownloadStarted((token, name) => { downloadState = { name, received: 0, total: 0 }; renderLib(); });

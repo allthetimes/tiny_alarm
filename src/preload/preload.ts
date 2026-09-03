@@ -16,5 +16,10 @@ contextBridge.exposeInMainWorld('alarmAPI', {
   cancelDownload: (token: string) => ipcRenderer.invoke('download:cancel', token),
   listSounds: () => ipcRenderer.invoke('sounds:list'),
   renameSound: (oldName: string, newName: string) => ipcRenderer.invoke('sounds:rename', oldName, newName),
-  deleteSound: (name: string) => ipcRenderer.invoke('sounds:delete', name)
+  deleteSound: (name: string) => ipcRenderer.invoke('sounds:delete', name),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setCloseAction: (action: 'minimize' | 'exit' | null) => ipcRenderer.invoke('settings:setClose', action),
+  setAutoLaunch: (on: boolean) => ipcRenderer.invoke('settings:setAutoLaunch', on),
+  openSoundsDir: () => ipcRenderer.invoke('settings:openSoundsDir'),
+  openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url)
 });
