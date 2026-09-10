@@ -15,9 +15,13 @@ export type Alarm = {
 export type PickedAudio = { path: string; name: string } | null;
 export type HolidayConfig = { holidays: string[]; workdays: string[] };
 export type SoundItem = { path: string; name: string; cover?: string };
+// 关闭响铃方式:长按的按键(KeyboardEvent.code)与需要按住的秒数
+export type DismissConfig = { dismissKey: string; dismissHoldSeconds: number };
 export type SettingsData = {
   closeAction: 'minimize' | 'exit' | null;
   openAtLogin: boolean;
+  dismissKey: string;
+  dismissHoldSeconds: number;
   version: string;
   author: string;
   github: string;
@@ -49,6 +53,8 @@ declare global {
       deleteSound: (name: string) => Promise<boolean>;
       getSettings: () => Promise<SettingsData>;
       setCloseAction: (a: 'minimize' | 'exit' | null) => Promise<void>;
+      setDismiss: (key: string, seconds: number) => Promise<DismissConfig>;
+      onSettingsChanged: (cb: (prefs: DismissConfig) => void) => void;
       setAutoLaunch: (on: boolean) => Promise<boolean>;
       openSoundsDir: () => Promise<boolean>;
       openExternal: (url: string) => Promise<void>;

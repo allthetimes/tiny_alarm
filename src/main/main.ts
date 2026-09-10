@@ -13,6 +13,10 @@ let tray: Tray | null = null;
 // 关闭行为:null=每次询问; 'minimize'=记住最小化到托盘; 'exit'=记住直接退出
 let closeAction: 'minimize' | 'exit' | null = null;
 let quitting = false;
+// 关闭响铃方式(设置窗口可改):长按的按键 + 需要按住的秒数。全局偏好,主窗口与设置窗口共用
+type DismissPrefs = { dismissKey: string; dismissHoldSeconds: number };
+const DEFAULT_DISMISS: DismissPrefs = { dismissKey: 'Space', dismissHoldSeconds: 5 };
+let dismissPrefs: DismissPrefs = { ...DEFAULT_DISMISS };
 const MUSIC_SITE = 'https://flac.music.hi.cn/';
 const GITHUB_URL = 'https://github.com/allthetimes/tiny_alarm';
 const DOWNLOAD_EXTS = /\.(mp3|wav|ogg|m4a|flac|aac|ape)$/i;
@@ -295,6 +299,30 @@ async function loadClosePref() {
     if (saved?.action === 'minimize' || saved?.action === 'exit') closeAction = saved.action;
   } catch { /* 首次运行或文件损坏:保持每次询问 */ }
 }
+// 关闭响铃偏好(dismissKey/dismissHoldSeconds)持久化:与 close-pref 一样放 userData,独立文件
+const prefsPath = () => path.join(app.getPath('userData'), 'preferences.json');
+// 长按时长可配范围:1–10 秒,越界一律收敛(设置里滑块也是这个区间)
+const HOLD_MIN = 1, HOLD_MAX = 10;
+const clampHoldSeconds = (v: unknown) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(HOLD_MAX, Math.max(HOLD_MIN, n)) : DEFAULT_DISMISS.dismissHoldSeconds;
+};
+async function loadPrefs() {
+  try {
+    const saved = JSON.parse(await fs.readFile(prefsPath(), 'utf8'));
+    dismissPrefs = {
+      dismissKey: typeof saved?.dismissKey === 'string' && saved.dismissKey ? saved.dismissKey : DEFAULT_DISMISS.dismissKey,
+      dismissHoldSeconds: clampHoldSeconds(saved?.dismissHoldSeconds)
+    };
+  } catch { /* 首次运行或文件损坏:用默认值(空格 / 5 秒) */ }
+}
+async function savePrefs() {
+  try { await fs.writeFile(prefsPath(), JSON.stringify(dismissPrefs, null, 2), 'utf8'); } catch { /* 写不进则本次会话内仍生效 */ }
+}
+// 配置改动后通知两个窗口:主窗口更新遮罩文案与长按判定,设置窗口回填控件
+function broadcastPrefs() {
+  for (const w of [win, settingsWin]) if (w && !w.isDestroyed()) w.webContents.send('settings:changed', dismissPrefs);
+}
 // 关闭行为:null=每次询问; 'minimize'=最小化到托盘; 'exit'=直接退出。托盘设置与关闭弹窗共用
 async function applyClosePref(action: 'minimize' | 'exit' | null) {
   closeAction = action;
@@ -344,7 +372,7 @@ function createSettingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); return; }
   settingsWin = new BrowserWindow({
     width: 640, height: 470, resizable: false, maximizable: false,
-    title: '设置', parent: win || undefined, backgroundColor: '#f7f8fc',
+    title: '设置', parent: win || undefined, backgroundColor: '#f5f6fb',
     titleBarStyle: 'hidden',
     titleBarOverlay: TITLE_BAR,
     webPreferences: { preload: path.join(__dirname, '../preload/preload.js'), contextIsolation: true, nodeIntegration: false }
@@ -385,7 +413,7 @@ function createWindow() {
   Menu.setApplicationMenu(null);
   win = new BrowserWindow({
     width: 480, height: 880, minWidth: 420, minHeight: 640,
-    backgroundColor: '#f7f8fc',
+    backgroundColor: '#f5f6fb',
     titleBarStyle: 'hidden',
     titleBarOverlay: TITLE_BAR,
     webPreferences: { preload: path.join(__dirname, '../preload/preload.js'), contextIsolation: true, nodeIntegration: false }
@@ -509,6 +537,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:get', async () => ({
     closeAction,
     openAtLogin: autoLaunchOn(),
+    dismissKey: dismissPrefs.dismissKey,
+    dismissHoldSeconds: dismissPrefs.dismissHoldSeconds,
     version: app.getVersion(),
     author: 'allthetimes',
     github: GITHUB_URL,
@@ -517,6 +547,16 @@ app.whenReady().then(async () => {
     soundsCount: (await fs.readdir(soundsPath()).catch(() => [] as string[])).filter(f => /\.(mp3|wav|ogg|m4a|flac)$/i.test(f)).length
   }));
   ipcMain.handle('settings:setClose', (_event, action: unknown) => applyClosePref(action === 'minimize' || action === 'exit' ? action : null));
+  // 关闭响铃方式:按键(KeyboardEvent.code) + 长按秒数。任一参数缺省则保留原值,越界自动收敛
+  ipcMain.handle('settings:setDismiss', async (_event, key: unknown, seconds: unknown) => {
+    dismissPrefs = {
+      dismissKey: typeof key === 'string' && key ? key : dismissPrefs.dismissKey,
+      dismissHoldSeconds: seconds === undefined || seconds === null ? dismissPrefs.dismissHoldSeconds : clampHoldSeconds(seconds)
+    };
+    await savePrefs();
+    broadcastPrefs();
+    return dismissPrefs;
+  });
   ipcMain.handle('settings:setAutoLaunch', (_event, on: unknown) => {
     app.setLoginItemSettings({ openAtLogin: !!on, ...launchItemOptions() });
     return autoLaunchOn();

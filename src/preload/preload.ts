@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('alarmAPI', {
   deleteSound: (name: string) => ipcRenderer.invoke('sounds:delete', name),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setCloseAction: (action: 'minimize' | 'exit' | null) => ipcRenderer.invoke('settings:setClose', action),
+  setDismiss: (key: string, seconds: number) => ipcRenderer.invoke('settings:setDismiss', key, seconds),
+  onSettingsChanged: (cb: (prefs: { dismissKey: string; dismissHoldSeconds: number }) => void) => { ipcRenderer.on('settings:changed', (_e, prefs) => cb(prefs)); },
   setAutoLaunch: (on: boolean) => ipcRenderer.invoke('settings:setAutoLaunch', on),
   openSoundsDir: () => ipcRenderer.invoke('settings:openSoundsDir'),
   openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url)

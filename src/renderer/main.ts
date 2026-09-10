@@ -1,4 +1,5 @@
 import type { Alarm, Repeat, HolidayConfig } from './types';
+import { keyLabel } from './keys';
 import './style.css';
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 const repeats: { key: Repeat; label: string }[] = [
@@ -23,11 +24,14 @@ let retryTimer: number | null = null;
 let retriesLeft = 0;
 let holdTimer: number | null = null;
 let holdStarted = 0;
+// 关闭响铃方式:来自设置窗口(默认长按空格 5 秒),通过 getSettings / onSettingsChanged 同步
+let dismissCode = 'Space';
+let dismissHoldSeconds = 5;
 let downloadState: { name: string; received: number; total: number } | null = null;
 let freshSound: string | null = null;
 audio.volume = volume;
 const app = document.querySelector<HTMLDivElement>('#app')!;
-app.innerHTML = `<div class="phone"><div class="titlebar-drag"></div><header class="top"><div class="brand"><div class="brand-mark">✦</div><strong>小小闹钟</strong></div><div class="clock"><strong id="clock">--:--</strong><span id="date">----</span></div></header><div class="hero"><p class="hi" id="greeting">早上好</p><p class="active"><i></i><span id="active-label">0 个闹钟正在运行</span></p></div><section id="alarm-list" class="alarm-list"></section><section class="empty" id="empty"><div class="empty-icon">◷</div><h2>还没有闹钟</h2><p>创建一个闹钟，开启你的专注时刻</p></section><div class="dock"><div class="dock-side"><label class="volume"><span>♫</span><input id="volume" type="range" min="0" max="100" value="72" aria-label="音量"></label><button class="icon-btn" id="sound-lib">我的铃声</button></div><button class="fab" id="add-btn">＋ 新建</button></div></div><div class="modal-backdrop hidden" id="modal"><div class="modal"><button class="close" id="close">×</button><h2 id="modal-title">新建闹钟</h2><label>时间<div class="time-picker" id="time-picker"><div class="tp-col"><button class="tp-btn" data-step="hour" data-dir="1" title="加一小时">▲</button><div class="tp-val" data-wheel="hour" id="tp-hour">08</div><button class="tp-btn" data-step="hour" data-dir="-1" title="减一小时">▼</button></div><div class="tp-colon">:</div><div class="tp-col"><button class="tp-btn" data-step="minute" data-dir="1" title="加一分钟">▲</button><div class="tp-val" data-wheel="minute" id="tp-minute">00</div><button class="tp-btn" data-step="minute" data-dir="-1" title="减一分钟">▼</button></div><span class="tp-icon">◷</span></div><input id="time-input" type="hidden" value="08:00"></label><label>标签<input id="label-input" type="text" placeholder="例如：晨读"></label><label>重复<div class="repeat-chips" id="repeat-chips">${repeats.map(r => `<button data-repeat="${r.key}">${r.label}</button>`).join('')}</div><div class="days" id="days">${weekdays.map((d, i) => `<button data-day="${i}">${d}</button>`).join('')}</div></label><div class="settings-grid"><label>响铃时长<select id="ring-seconds"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label><label>再响间隔<select id="snooze-minutes"><option value="0">不再响</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option></select></label><label>最多再响<select id="snooze-count"><option value="0">0 次</option><option value="1">1 次</option><option value="3" selected>3 次</option><option value="5">5 次</option></select></label></div><label>铃声<div class="sound-row"><button class="sound-select" id="sound-btn">♫ <span id="sound-name">系统默认铃声</span></button><button class="test-btn" id="test-sound">试听</button></div></label><button class="primary full" id="save-btn">保存闹钟</button></div></div><div class="modal-backdrop hidden" id="sound-lib-modal"><div class="modal"><button class="close" id="lib-close">×</button><h2 id="lib-title">我的铃声</h2><div class="lib-list" id="lib-list"></div><button class="primary full" id="lib-import">＋ 导入铃声</button><button class="ghost full" id="lib-site">🌐 内嵌打开音乐网站</button><small class="lib-hint">在内嵌窗口下载的音频会自动加入铃声库</small></div></div><div class="modal-backdrop hidden" id="rename-modal"><div class="modal small"><h2 id="rename-title">重命名铃声</h2><p class="rename-format" id="rename-format">（新名称）.mp3</p><div class="rename-box"><span class="rename-fixed hidden" id="rename-prefix"></span><input id="rename-input" type="text" placeholder="新名称"><span class="rename-fixed" id="rename-ext">.mp3</span></div><div class="rename-actions"><button class="ghost" id="rename-cancel">取消</button><button class="primary" id="rename-ok">确定</button></div></div></div><div class="ring-overlay hidden" id="ring-overlay"><div class="ring-panel"><div class="ring-icon">♬</div><p class="ring-kicker">小小闹钟提醒</p><h2 id="ring-label">时间到了</h2><p>请长按空格键 5 秒关闭本次闹钟</p><div class="progress-track"><div id="space-progress"></div></div><small>已按住 <span id="hold-seconds">0</span> / 5 秒</small></div></div>`;
+app.innerHTML = `<div class="phone"><div class="titlebar-drag"></div><header class="top"><div class="brand"><div class="brand-mark">✦</div><strong>小小闹钟</strong></div><div class="clock"><strong id="clock">--:--</strong><span id="date">----</span></div></header><div class="hero"><p class="hi" id="greeting">早上好</p><p class="active"><i></i><span id="active-label">0 个闹钟正在运行</span></p></div><section id="alarm-list" class="alarm-list"></section><section class="empty" id="empty"><div class="empty-icon">◷</div><h2>还没有闹钟</h2><p>创建一个闹钟，开启你的专注时刻</p></section><div class="dock"><div class="dock-side"><label class="volume"><span>♫</span><input id="volume" type="range" min="0" max="100" value="72" aria-label="音量"></label><button class="icon-btn" id="sound-lib">我的铃声</button></div><button class="fab" id="add-btn">＋ 新建</button></div></div><div class="modal-backdrop hidden" id="modal"><div class="modal"><button class="close" id="close">×</button><h2 id="modal-title">新建闹钟</h2><label>时间<div class="time-picker" id="time-picker"><div class="tp-col"><button class="tp-btn" data-step="hour" data-dir="1" title="加一小时">▲</button><div class="tp-val" data-wheel="hour" id="tp-hour">08</div><button class="tp-btn" data-step="hour" data-dir="-1" title="减一小时">▼</button></div><div class="tp-colon">:</div><div class="tp-col"><button class="tp-btn" data-step="minute" data-dir="1" title="加一分钟">▲</button><div class="tp-val" data-wheel="minute" id="tp-minute">00</div><button class="tp-btn" data-step="minute" data-dir="-1" title="减一分钟">▼</button></div><span class="tp-icon">◷</span></div><input id="time-input" type="hidden" value="08:00"></label><label>标签<input id="label-input" type="text" placeholder="例如：晨读"></label><label>重复<div class="repeat-chips" id="repeat-chips">${repeats.map(r => `<button data-repeat="${r.key}">${r.label}</button>`).join('')}</div><div class="days" id="days">${weekdays.map((d, i) => `<button data-day="${i}">${d}</button>`).join('')}</div></label><div class="settings-grid"><label>响铃时长<select id="ring-seconds"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label><label>再响间隔<select id="snooze-minutes"><option value="0">不再响</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option></select></label><label>最多再响<select id="snooze-count"><option value="0">0 次</option><option value="1">1 次</option><option value="3" selected>3 次</option><option value="5">5 次</option></select></label></div><label>铃声<div class="sound-row"><button class="sound-select" id="sound-btn">♫ <span id="sound-name">系统默认铃声</span></button><button class="test-btn" id="test-sound">试听</button></div></label><button class="primary full" id="save-btn">保存闹钟</button></div></div><div class="modal-backdrop hidden" id="sound-lib-modal"><div class="modal"><button class="close" id="lib-close">×</button><h2 id="lib-title">我的铃声</h2><div class="lib-list" id="lib-list"></div><button class="primary full" id="lib-import">＋ 导入铃声</button><button class="ghost full" id="lib-site">🌐 内嵌打开音乐网站</button><small class="lib-hint">在内嵌窗口下载的音频会自动加入铃声库</small></div></div><div class="modal-backdrop hidden" id="rename-modal"><div class="modal small"><h2 id="rename-title">重命名铃声</h2><p class="rename-format" id="rename-format">（新名称）.mp3</p><div class="rename-box"><span class="rename-fixed hidden" id="rename-prefix"></span><input id="rename-input" type="text" placeholder="新名称"><span class="rename-fixed" id="rename-ext">.mp3</span></div><div class="rename-actions"><button class="ghost" id="rename-cancel">取消</button><button class="primary" id="rename-ok">确定</button></div></div></div><div class="ring-overlay hidden" id="ring-overlay"><div class="ring-panel"><div class="ring-icon">♬</div><p class="ring-kicker">小小闹钟提醒</p><h2 id="ring-label">时间到了</h2><p>请长按 <span class="ring-key" id="ring-key">空格</span> <span class="ring-key" id="ring-hold">5</span> 秒关闭本次闹钟</p><div class="progress-track"><div id="space-progress"></div></div><small>已按住 <span id="hold-seconds">0</span> / <span id="hold-target">5</span> 秒</small></div></div>`;
 const $ = <T extends Element>(s: string) => document.querySelector<T>(s)!;
 const pad = (n: number) => String(n).padStart(2, '0');
 const todayKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -101,14 +105,26 @@ function playRing(a: Alarm) {
     } else stopRinging();
   }, Math.max(1, a.ringSeconds || 30) * 1000);
 }
+// 应用(或热更新)关闭响铃配置:同步遮罩里的按键名与目标秒数,长按判定随之变化
+function applyDismissConfig(key: string, seconds: number) {
+  dismissCode = key || 'Space';
+  dismissHoldSeconds = Math.min(10, Math.max(1, Math.round(Number(seconds)) || 5));
+  const label = keyLabel(dismissCode);
+  const keyEl = document.getElementById('ring-key');
+  const holdEl = document.getElementById('ring-hold');
+  const targetEl = document.getElementById('hold-target');
+  if (keyEl) keyEl.textContent = label;
+  if (holdEl) holdEl.textContent = String(dismissHoldSeconds);
+  if (targetEl) targetEl.textContent = String(dismissHoldSeconds);
+}
 function beginHold() {
   if (!ringingAlarm || holdTimer) return;
   holdStarted = Date.now();
   holdTimer = window.setInterval(() => {
-    const seconds = Math.min(5, (Date.now() - holdStarted) / 1000);
+    const seconds = Math.min(dismissHoldSeconds, (Date.now() - holdStarted) / 1000);
     ($('#hold-seconds') as HTMLElement).textContent = seconds.toFixed(1);
-    ($('#space-progress') as HTMLElement).style.width = `${seconds * 20}%`;
-    if (seconds >= 5) { if (holdTimer) window.clearInterval(holdTimer); holdTimer = null; stopRinging(); }
+    ($('#space-progress') as HTMLElement).style.width = `${seconds / dismissHoldSeconds * 100}%`;
+    if (seconds >= dismissHoldSeconds) { if (holdTimer) window.clearInterval(holdTimer); holdTimer = null; stopRinging(); }
   }, 50);
 }
 function endHold() {
@@ -331,6 +347,15 @@ $('#save-btn').addEventListener('click', async () => {
 });
 window.alarmAPI.loadHolidays().then(h => { holidays = h; render(); });
 window.alarmAPI.load().then(data => { alarms = (data as Alarm[]).map(a => ({ ...a, days: a.days || [], repeat: a.repeat || (a.days?.length ? 'custom' : 'once'), soundPath: a.soundPath || '', soundName: a.soundName || '系统默认铃声', ringSeconds: a.ringSeconds || 30, snoozeMinutes: a.snoozeMinutes ?? 5, snoozeCount: a.snoozeCount || 0 })); render(); });
-window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); beginHold(); } });
-window.addEventListener('keyup', e => { if (e.code === 'Space') endHold(); });
+// 长按关闭:按键与时长均可在设置里改;只在响铃遮罩出现时拦截,避免影响输入框打字
+window.addEventListener('keydown', e => {
+  if (!ringingAlarm || e.code !== dismissCode) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  e.preventDefault();
+  if (!e.repeat) beginHold();
+});
+window.addEventListener('keyup', e => { if (e.code === dismissCode) endHold(); });
+window.alarmAPI.getSettings().then(s => applyDismissConfig(s.dismissKey, s.dismissHoldSeconds)).catch(() => { /* 读取失败沿用默认 */ });
+window.alarmAPI.onSettingsChanged(prefs => applyDismissConfig(prefs.dismissKey, prefs.dismissHoldSeconds));
 if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
