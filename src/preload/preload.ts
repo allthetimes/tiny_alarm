@@ -23,5 +23,11 @@ contextBridge.exposeInMainWorld('alarmAPI', {
   onSettingsChanged: (cb: (prefs: { dismissKey: string; dismissHoldSeconds: number }) => void) => { ipcRenderer.on('settings:changed', (_e, prefs) => cb(prefs)); },
   setAutoLaunch: (on: boolean) => ipcRenderer.invoke('settings:setAutoLaunch', on),
   openSoundsDir: () => ipcRenderer.invoke('settings:openSoundsDir'),
-  openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url)
+  openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
+  // 像素风格界面:自绘窗口按钮 + 大窗/小窗切换
+  winMinimize: () => ipcRenderer.invoke('win:minimize'),
+  winClose: () => ipcRenderer.invoke('win:close'),
+  setCompact: (compact: boolean) => ipcRenderer.invoke('win:setCompact', compact),
+  isCompact: () => ipcRenderer.invoke('win:isCompact'),
+  onCompactChanged: (cb: (compact: boolean) => void) => { ipcRenderer.on('win:compactChanged', (_e, compact) => cb(compact)); }
 });

@@ -58,6 +58,11 @@ declare global {
       setAutoLaunch: (on: boolean) => Promise<boolean>;
       openSoundsDir: () => Promise<boolean>;
       openExternal: (url: string) => Promise<void>;
+      winMinimize: () => Promise<void>;
+      winClose: () => Promise<void>;
+      setCompact: (compact: boolean) => Promise<boolean>;
+      isCompact: () => Promise<boolean>;
+      onCompactChanged: (cb: (compact: boolean) => void) => void;
     };
   }
 }

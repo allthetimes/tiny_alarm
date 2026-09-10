@@ -31,7 +31,11 @@ let downloadState: { name: string; received: number; total: number } | null = nu
 let freshSound: string | null = null;
 audio.volume = volume;
 const app = document.querySelector<HTMLDivElement>('#app')!;
-app.innerHTML = `<div class="phone"><div class="titlebar-drag"></div><header class="top"><div class="brand"><div class="brand-mark">✦</div><strong>小小闹钟</strong></div><div class="clock"><strong id="clock">--:--</strong><span id="date">----</span></div></header><div class="hero"><p class="hi" id="greeting">早上好</p><p class="active"><i></i><span id="active-label">0 个闹钟正在运行</span></p></div><section id="alarm-list" class="alarm-list"></section><section class="empty" id="empty"><div class="empty-icon">◷</div><h2>还没有闹钟</h2><p>创建一个闹钟，开启你的专注时刻</p></section><div class="dock"><div class="dock-side"><label class="volume"><span>♫</span><input id="volume" type="range" min="0" max="100" value="72" aria-label="音量"></label><button class="icon-btn" id="sound-lib">我的铃声</button></div><button class="fab" id="add-btn">＋ 新建</button></div></div><div class="modal-backdrop hidden" id="modal"><div class="modal"><button class="close" id="close">×</button><h2 id="modal-title">新建闹钟</h2><label>时间<div class="time-picker" id="time-picker"><div class="tp-col"><button class="tp-btn" data-step="hour" data-dir="1" title="加一小时">▲</button><div class="tp-val" data-wheel="hour" id="tp-hour">08</div><button class="tp-btn" data-step="hour" data-dir="-1" title="减一小时">▼</button></div><div class="tp-colon">:</div><div class="tp-col"><button class="tp-btn" data-step="minute" data-dir="1" title="加一分钟">▲</button><div class="tp-val" data-wheel="minute" id="tp-minute">00</div><button class="tp-btn" data-step="minute" data-dir="-1" title="减一分钟">▼</button></div><span class="tp-icon">◷</span></div><input id="time-input" type="hidden" value="08:00"></label><label>标签<input id="label-input" type="text" placeholder="例如：晨读"></label><label>重复<div class="repeat-chips" id="repeat-chips">${repeats.map(r => `<button data-repeat="${r.key}">${r.label}</button>`).join('')}</div><div class="days" id="days">${weekdays.map((d, i) => `<button data-day="${i}">${d}</button>`).join('')}</div></label><div class="settings-grid"><label>响铃时长<select id="ring-seconds"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label><label>再响间隔<select id="snooze-minutes"><option value="0">不再响</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option></select></label><label>最多再响<select id="snooze-count"><option value="0">0 次</option><option value="1">1 次</option><option value="3" selected>3 次</option><option value="5">5 次</option></select></label></div><label>铃声<div class="sound-row"><button class="sound-select" id="sound-btn">♫ <span id="sound-name">系统默认铃声</span></button><button class="test-btn" id="test-sound">试听</button></div></label><button class="primary full" id="save-btn">保存闹钟</button></div></div><div class="modal-backdrop hidden" id="sound-lib-modal"><div class="modal"><button class="close" id="lib-close">×</button><h2 id="lib-title">我的铃声</h2><div class="lib-list" id="lib-list"></div><button class="primary full" id="lib-import">＋ 导入铃声</button><button class="ghost full" id="lib-site">🌐 内嵌打开音乐网站</button><small class="lib-hint">在内嵌窗口下载的音频会自动加入铃声库</small></div></div><div class="modal-backdrop hidden" id="rename-modal"><div class="modal small"><h2 id="rename-title">重命名铃声</h2><p class="rename-format" id="rename-format">（新名称）.mp3</p><div class="rename-box"><span class="rename-fixed hidden" id="rename-prefix"></span><input id="rename-input" type="text" placeholder="新名称"><span class="rename-fixed" id="rename-ext">.mp3</span></div><div class="rename-actions"><button class="ghost" id="rename-cancel">取消</button><button class="primary" id="rename-ok">确定</button></div></div></div><div class="ring-overlay hidden" id="ring-overlay"><div class="ring-panel"><div class="ring-icon">♬</div><p class="ring-kicker">小小闹钟提醒</p><h2 id="ring-label">时间到了</h2><p>请长按 <span class="ring-key" id="ring-key">空格</span> <span class="ring-key" id="ring-hold">5</span> 秒关闭本次闹钟</p><div class="progress-track"><div id="space-progress"></div></div><small>已按住 <span id="hold-seconds">0</span> / <span id="hold-target">5</span> 秒</small></div></div>`;
+// 像素小窗(精简模式)功能暂缓:入口按钮先关掉,后续再改。
+// 置为 true 即可恢复标题栏的「最小化 · 切换 · 关闭」三按钮布局 ——
+// 像素主题样式、px-compact 面板与主进程的尺寸切换逻辑都完整保留,无需重写。
+const PIXEL_UI_ENABLED = false;
+app.innerHTML = `<div class="titlebar-drag"></div><div class="win-ctl"><button id="win-min" title="最小化" aria-label="最小化"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="8.5" width="9" height="2" fill="currentColor"/></svg></button>${PIXEL_UI_ENABLED ? '<button id="win-compact" title="切换像素小窗" aria-label="切换像素小窗"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="5" y="5" width="6" height="6" fill="currentColor"/></svg></button>' : ''}<button class="ctl-close" id="win-close" title="关闭" aria-label="关闭"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div><div class="phone"><header class="top"><div class="brand"><div class="brand-mark">✦</div><strong>小小闹钟</strong></div><div class="clock"><strong id="clock">--:--</strong><span id="date">----</span></div></header><div class="hero"><p class="hi" id="greeting">早上好</p><p class="active"><i></i><span id="active-label">0 个闹钟正在运行</span></p></div><section id="alarm-list" class="alarm-list"></section><section class="empty" id="empty"><div class="empty-icon">◷</div><h2>还没有闹钟</h2><p>创建一个闹钟，开启你的专注时刻</p></section><div class="dock"><div class="dock-side"><label class="volume"><span>♫</span><input id="volume" type="range" min="0" max="100" value="72" aria-label="音量"></label><button class="icon-btn" id="sound-lib">我的铃声</button></div><button class="fab" id="add-btn">＋ 新建</button></div></div><div class="px-compact"><section class="px-face"><strong class="px-clock" id="px-clock">--:--</strong><span class="px-date" id="px-date">----</span></section><div class="px-next"><i class="px-dot" id="px-dot"></i><span class="px-next-text" id="px-next-text">暂无闹钟</span><b class="px-next-count" id="px-next-count"></b></div><div class="px-actions"><button id="px-open">＋ 新建闹钟</button></div></div><div class="modal-backdrop hidden" id="modal"><div class="modal"><button class="close" id="close">×</button><h2 id="modal-title">新建闹钟</h2><label>时间<div class="time-picker" id="time-picker"><div class="tp-col"><button class="tp-btn" data-step="hour" data-dir="1" title="加一小时">▲</button><div class="tp-val" data-wheel="hour" id="tp-hour">08</div><button class="tp-btn" data-step="hour" data-dir="-1" title="减一小时">▼</button></div><div class="tp-colon">:</div><div class="tp-col"><button class="tp-btn" data-step="minute" data-dir="1" title="加一分钟">▲</button><div class="tp-val" data-wheel="minute" id="tp-minute">00</div><button class="tp-btn" data-step="minute" data-dir="-1" title="减一分钟">▼</button></div><span class="tp-icon">◷</span></div><input id="time-input" type="hidden" value="08:00"></label><label>标签<input id="label-input" type="text" placeholder="例如：晨读"></label><label>重复<div class="repeat-chips" id="repeat-chips">${repeats.map(r => `<button data-repeat="${r.key}">${r.label}</button>`).join('')}</div><div class="days" id="days">${weekdays.map((d, i) => `<button data-day="${i}">${d}</button>`).join('')}</div></label><div class="settings-grid"><label>响铃时长<select id="ring-seconds"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label><label>再响间隔<select id="snooze-minutes"><option value="0">不再响</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option></select></label><label>最多再响<select id="snooze-count"><option value="0">0 次</option><option value="1">1 次</option><option value="3" selected>3 次</option><option value="5">5 次</option></select></label></div><label>铃声<div class="sound-row"><button class="sound-select" id="sound-btn">♫ <span id="sound-name">系统默认铃声</span></button><button class="test-btn" id="test-sound">试听</button></div></label><button class="primary full" id="save-btn">保存闹钟</button></div></div><div class="modal-backdrop hidden" id="sound-lib-modal"><div class="modal"><button class="close" id="lib-close">×</button><h2 id="lib-title">我的铃声</h2><div class="lib-list" id="lib-list"></div><button class="primary full" id="lib-import">＋ 导入铃声</button><button class="ghost full" id="lib-site">🌐 内嵌打开音乐网站</button><small class="lib-hint">在内嵌窗口下载的音频会自动加入铃声库</small></div></div><div class="modal-backdrop hidden" id="rename-modal"><div class="modal small"><h2 id="rename-title">重命名铃声</h2><p class="rename-format" id="rename-format">（新名称）.mp3</p><div class="rename-box"><span class="rename-fixed hidden" id="rename-prefix"></span><input id="rename-input" type="text" placeholder="新名称"><span class="rename-fixed" id="rename-ext">.mp3</span></div><div class="rename-actions"><button class="ghost" id="rename-cancel">取消</button><button class="primary" id="rename-ok">确定</button></div></div></div><div class="ring-overlay hidden" id="ring-overlay"><div class="ring-panel"><div class="ring-icon">♬</div><p class="ring-kicker">小小闹钟提醒</p><h2 id="ring-label">时间到了</h2><p>请长按 <span class="ring-key" id="ring-key">空格</span> <span class="ring-key" id="ring-hold">5</span> 秒关闭本次闹钟</p><div class="progress-track"><div id="space-progress"></div></div><small>已按住 <span id="hold-seconds">0</span> / <span id="hold-target">5</span> 秒</small></div></div>`;
 const $ = <T extends Element>(s: string) => document.querySelector<T>(s)!;
 const pad = (n: number) => String(n).padStart(2, '0');
 const todayKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -78,7 +82,61 @@ function nextRing(a: Alarm): string {
   return '不重复';
 }
 
-function tick() { const now = new Date(); $('#clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`; $('#date').textContent = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }); $('#greeting').textContent = greeting(now.getHours()); checkAlarms(now); }
+// ── 像素小窗渲染 ──
+// 离下一个闹钟还有多久。把闹钟的时分投到今天/明天/下一个匹配日,取最近的未来时刻
+type NextInfo = { at: Date; alarm: Alarm } | null;
+function nextAlarmInfo(now: Date): NextInfo {
+  let best: NextInfo = null;
+  for (const a of alarms) {
+    if (!a.enabled) continue;
+    const [h, m] = a.time.split(':').map(Number);
+    for (let add = 0; add < 8; add++) {
+      const d = new Date(now); d.setDate(d.getDate() + add); d.setHours(h, m, 0, 0);
+      if (d <= now) continue;
+      if (a.repeat === 'once' && add > 0) continue;
+      if (!matchDay(a, d)) continue;
+      if (!best || d < best.at) best = { at: d, alarm: a };
+      break; // 这个闹钟最近的一次已找到
+    }
+  }
+  return best;
+}
+// 倒计时文案:>1 天用「N天H时」,>1 小时用「H时M分」,否则「M分S秒」
+function countdownText(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(total / 86400), hours = Math.floor(total % 86400 / 3600);
+  const minutes = Math.floor(total % 3600 / 60), seconds = total % 60;
+  if (days > 0) return `${days}天${hours}时`;
+  if (hours > 0) return `${hours}时${pad(minutes)}分`;
+  return `${minutes}分${pad(seconds)}秒`;
+}
+function renderCompact(now: Date) {
+  const clock = document.getElementById('px-clock');
+  if (!clock) return; // 小窗面板不存在则跳过(理论上不会发生)
+  clock.textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const { at, alarm } = nextAlarmInfo(now) || { at: null, alarm: null };
+  const dateEl = document.getElementById('px-date')!;
+  const dotEl = document.getElementById('px-dot')!;
+  const textEl = document.getElementById('px-next-text')!;
+  const countEl = document.getElementById('px-next-count')!;
+  if (alarm && at) {
+    // 今天 / 明天 / 具体日期,给一个短前缀
+    const today = todayKey(now), tomorrow = todayKey(new Date(now.getTime() + 86400000)), atKey = todayKey(at);
+    const prefix = atKey === today ? '今天' : atKey === tomorrow ? '明天' : `${at.getMonth() + 1}/${at.getDate()}`;
+    dateEl.textContent = now.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', weekday: 'short' });
+    dotEl.classList.remove('off');
+    textEl.textContent = `${prefix} ${alarm.time} ${alarm.label || '闹钟'}`;
+    countEl.textContent = countdownText(at.getTime() - now.getTime());
+    countEl.classList.remove('off');
+  } else {
+    dateEl.textContent = now.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', weekday: 'short' });
+    dotEl.classList.add('off');
+    textEl.textContent = alarms.length ? '闹钟都已停用' : '暂无闹钟';
+    countEl.textContent = '';
+    countEl.classList.add('off');
+  }
+}
+function tick() { const now = new Date(); $('#clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`; $('#date').textContent = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }); $('#greeting').textContent = greeting(now.getHours()); renderCompact(now); checkAlarms(now); }
 function stopRinging() {
   if (ringTimer) window.clearTimeout(ringTimer);
   if (retryTimer) window.clearTimeout(retryTimer);
@@ -359,3 +417,29 @@ window.addEventListener('keyup', e => { if (e.code === dismissCode) endHold(); }
 window.alarmAPI.getSettings().then(s => applyDismissConfig(s.dismissKey, s.dismissHoldSeconds)).catch(() => { /* 读取失败沿用默认 */ });
 window.alarmAPI.onSettingsChanged(prefs => applyDismissConfig(prefs.dismissKey, prefs.dismissHoldSeconds));
 if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+
+// ── 窗口按钮:最小化 ·（切换像素小窗,暂缓）· 关闭 ──
+// 标题栏按钮自绘,真实窗口尺寸由主进程调整;像素小窗入口受 PIXEL_UI_ENABLED 控制
+function applyCompactUI(compact: boolean) {
+  // 功能停用期间强制保持大窗:历史偏好里的 compact=true 不会把界面切进小窗又退不出来
+  document.body.classList.toggle('compact', PIXEL_UI_ENABLED && compact);
+  const btn = document.getElementById('win-compact');
+  if (btn) {
+    const title = PIXEL_UI_ENABLED && compact ? '切换回大窗' : '切换像素小窗';
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+  }
+  renderCompact(new Date());
+}
+document.getElementById('win-min')?.addEventListener('click', () => { void window.alarmAPI.winMinimize(); });
+document.getElementById('win-close')?.addEventListener('click', () => { void window.alarmAPI.winClose(); });
+// 像素小窗入口:功能暂缓,按钮不渲染(见 PIXEL_UI_ENABLED);恢复入口时这段逻辑无需改动
+document.getElementById('win-compact')?.addEventListener('click', async () => {
+  const next = !document.body.classList.contains('compact');
+  applyCompactUI(next); // 先让布局切过去,窗口再缩放,视觉上更连贯
+  await window.alarmAPI.setCompact(next);
+});
+document.getElementById('px-open')?.addEventListener('click', () => openModal());
+window.alarmAPI.onCompactChanged(applyCompactUI);
+// 停用期间不查询、不套用历史小窗状态,始终以大窗呈现
+if (PIXEL_UI_ENABLED) window.alarmAPI.isCompact().then(applyCompactUI).catch(() => { /* 读不到就按大窗处理 */ });

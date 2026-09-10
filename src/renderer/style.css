@@ -38,7 +38,16 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 html{scrollbar-width:none}
 
 /* ── 主窗口外壳 ── */
-.titlebar-drag{position:fixed;top:0;left:0;right:140px;height:36px;-webkit-app-region:drag;z-index:99}
+.titlebar-drag{position:fixed;top:0;left:0;right:128px;height:38px;-webkit-app-region:drag;z-index:99}
+
+/* ── 窗口控制按钮:最小化 | 切换大小窗 | 关闭 ──
+   像素风格自绘按钮,压在右上角空白处(时钟在左下,不会重叠),整条可拖拽 */
+.win-ctl{position:fixed;top:8px;right:8px;z-index:100;display:flex;gap:5px;-webkit-app-region:no-drag}
+.win-ctl button{width:26px;height:26px;padding:0;border:1px solid var(--line-strong);background:var(--surface);color:var(--text-2);border-radius:6px;display:grid;place-items:center;cursor:pointer;transition:background .12s var(--ease),color .12s var(--ease),border-color .12s var(--ease)}
+.win-ctl button:hover{background:var(--brand-soft);border-color:var(--brand-line);color:var(--brand)}
+.win-ctl button:active{background:var(--brand-line)}
+.win-ctl .ctl-close:hover{background:#fdecef;border-color:#f6ccd4;color:var(--danger)}
+.win-ctl svg{width:12px;height:12px;display:block}
 .phone{max-width:400px;margin:0 auto;min-height:100vh;position:relative;padding:44px 20px 122px;background:radial-gradient(128% 74% at 50% -10%,#e9ebff 0,rgba(233,235,255,0) 62%),var(--bg)}
 
 /* ── 顶部:品牌 + 时钟(时间为主视觉) ── */
@@ -230,6 +239,80 @@ html{scrollbar-width:none}
 .about-head p{margin:3px 0 0;font-size:11px;color:var(--text-3)}
 .brand-mark.big{width:48px;height:48px;border-radius:16px;font-size:24px;flex:none}
 .about-runtime{margin:14px 2px 0;font-size:10px;color:var(--text-3);line-height:1.6}
+
+/* ══════════════════════════════════════════════════════════
+   像素小窗(精简模式):方角、硬边阴影、点阵字体、无渐变
+   由标题栏的切换按钮进入,整块窗口只剩「时钟 + 下一个闹钟」
+   ══════════════════════════════════════════════════════════ */
+:root{--px-ink:#262a4c;--px-line:#4a4f7a;--px-accent:#5b5bd6;--px-panel:#fff;--px-sunk:#edeef8}
+/* 外壳保持不透明纯色:窗口被主进程缩到 300×200,透明处会露出桌面 */
+body.compact{background:var(--bg);overflow:hidden}
+body.compact .titlebar-drag{right:96px;height:34px}
+body.compact .win-ctl{top:6px;right:6px;gap:4px}
+body.compact .win-ctl button{width:22px;height:22px;border-width:2px;border-color:var(--px-line);border-radius:0;color:var(--px-ink)}
+/* 隐藏大窗的全部内容,只留像素面板 */
+body.compact .phone{display:none}
+.px-compact{display:none}
+
+body.compact .px-compact{
+  display:flex;flex-direction:column;
+  width:100vw;height:100vh;
+  padding:32px 6px 6px;gap:5px;
+  background:var(--bg);
+}
+
+/* 时钟区:整块边框用 box-shadow 硬描边,不用 border-radius(像素风的方角) */
+.px-face{
+  flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;
+  background:var(--px-panel);border:2px solid var(--px-line);
+  box-shadow:4px 4px 0 var(--px-sunk);
+}
+.px-clock{
+  font-family:'Consolas','Courier New','Noto Sans SC',monospace;
+  font-size:50px;font-weight:700;line-height:1;letter-spacing:.01em;
+  color:var(--px-ink);font-variant-numeric:tabular-nums;
+  /* 一点光晕让数字发光,仍保持锐利边缘 */
+  text-shadow:2px 2px 0 var(--px-sunk);
+}
+.px-date{font-size:10px;font-weight:600;color:#8d92b6;letter-spacing:.08em}
+
+/* 下一个闹钟:图标 + 文案 + 倒计时,一起居中 */
+.px-next{display:flex;align-items:center;gap:6px;max-width:100%;padding:0 4px}
+.px-dot{width:7px;height:7px;flex:none;background:var(--ok);box-shadow:2px 2px 0 rgba(60,174,126,.25)}
+.px-dot.off{background:#c8cbdd;box-shadow:2px 2px 0 rgba(200,203,221,.5)}
+.px-next-text{font-size:11px;font-weight:600;color:var(--px-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px}
+.px-next-count{font-family:'Consolas','Courier New',monospace;font-size:11px;font-weight:700;color:var(--px-accent);font-variant-numeric:tabular-nums;white-space:nowrap}
+.px-next-count.off{color:#a2a6bd}
+
+/* 底部动作条:只有编辑/新建一个方按钮 */
+.px-actions{display:flex;flex:none;height:26px}
+.px-actions button{
+  flex:1;border:2px solid var(--px-line);background:var(--px-panel);color:var(--px-ink);
+  font-size:11px;font-weight:600;cursor:pointer;letter-spacing:.02em;
+  transition:background .1s var(--ease),color .1s var(--ease);
+}
+.px-actions button:hover{background:var(--brand-soft)}
+.px-actions button:active{background:var(--brand-line);transform:translate(1px,1px);box-shadow:none}
+
+/* 小窗里的弹窗也要方角:进小窗时自适应尺寸,主进程已把最小尺寸放到 300×200 之上 */
+body.compact .modal-backdrop{padding:6px}
+body.compact .modal{border-radius:0;border:2px solid var(--px-line);box-shadow:4px 4px 0 rgba(74,79,122,.28);padding:16px;max-height:calc(100vh - 12px)}
+/* 关闭按钮挪到标题右侧并让位给窗口控制条,避免与自绘的最小化/切换/关闭重叠 */
+body.compact .modal .close{top:auto;bottom:calc(100% + 2px);right:0;font-size:16px;padding:0 4px;line-height:1.2}
+body.compact .modal h2{font-size:14px;margin:0 0 10px}
+body.compact .modal label{margin:8px 0;font-size:10px}
+body.compact .modal input{padding:6px 8px;margin-top:4px;font-size:11px}
+body.compact .modal-backdrop *{border-radius:0!important}
+body.compact .modal-backdrop .days button{width:24px;height:24px;font-size:10px}
+body.compact .modal-backdrop .time-picker{padding:6px 10px}
+body.compact .modal-backdrop .tp-val{font-size:22px;min-width:40px}
+body.compact .modal-backdrop .tp-btn{font-size:9px;padding:2px 12px}
+body.compact .modal-backdrop .tp-colon{font-size:18px}
+body.compact .modal-backdrop .primary,body.compact .modal-backdrop .ghost{padding:8px;font-size:11px;box-shadow:none}
+
+/* 响铃遮罩在小窗里铺满,保持可读 */
+body.compact .ring-panel{border-radius:0;border:2px solid var(--px-line);box-shadow:5px 5px 0 rgba(74,79,122,.35)}
+body.compact .ring-icon{border-radius:0}
 
 /* ── 动效偏好 ── */
 @media (prefers-reduced-motion: reduce){

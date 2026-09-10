@@ -1,6 +1,6 @@
 {
   "name": "tiny-alarm",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "A calm, focused desktop alarm clock",
   "author": "allthetimes (https://github.com/allthetimes)",
   "main": "dist-electron/main/main.js",
@@ -29,7 +29,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "artifactName": "tiny-alarm-setup-${version}.${ext}"
   },
   "dependencies": {
     "ansi-styles": "^7.0.0",

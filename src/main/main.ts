@@ -202,6 +202,7 @@ async function importDownloadedFile(file: string) {
   } catch { return null; /* 导入失败时静默，用户仍可手动导入 */ }
 }
 
+
 // 下载结束后关闭内嵌窗口:网站里的音乐可能还在播放,留着会让用户找不到声源
 function closeMusicWindow() {
   if (musicWin && !musicWin.isDestroyed()) musicWin.close();
@@ -211,7 +212,9 @@ function createMusicWindow() {
   if (musicWin && !musicWin.isDestroyed()) { musicWin.show(); musicWin.focus(); return; }
   musicWin = new BrowserWindow({
     width: 1000, height: 760, title: '音乐下载',
-    parent: win || undefined, backgroundColor: '#ffffff',
+    parent: win || undefined,
+    // 第三方站点直接铺满窗口,不透明即可;无边框 + 透明是为了让圆角由渲染层控制
+    backgroundColor: '#ffffff',
     titleBarStyle: 'hidden',
     titleBarOverlay: { ...TITLE_BAR, color: '#ffffff' },
     webPreferences: { contextIsolation: true, nodeIntegration: false }
@@ -291,6 +294,33 @@ function createMusicWindow() {
 // 按钮底色与应用背景一致,深灰图标。内容区需在顶部预留 -webkit-app-region: drag 的拖拽条。
 const TITLE_BAR = { color: '#00000000', symbolColor: '#5a5e73', height: 36 };
 
+// ── 像素小窗(精简模式)──
+// 小窗是一块更小、更方的窗口,只显示时钟与下一个闹钟;由标题栏的切换按钮在两种模式间来回切
+// 高度留到 220:小窗内打开「新建闹钟」弹窗时,表单需要这点垂直空间才不至于被挤压
+const COMPACT_W = 300, COMPACT_H = 220;
+const FULL_MIN_W = 420, FULL_MIN_H = 640;
+// 像素小窗功能暂缓:入口按钮已在渲染层关闭(见 renderer/main.ts 的 PIXEL_UI_ENABLED)。
+// 这里一并停用启动恢复与 IPC 写入,确保历史偏好里的 compact=true 不会让窗口以小窗尺寸启动。
+// 后续恢复功能时,把两处 PIXEL_UI_ENABLED 同时置为 true 即可。
+const PIXEL_UI_ENABLED = false;
+let compactMode = false;
+let savedBounds: Electron.Rectangle | null = null;
+
+// 把窗口设成小窗尺寸(不可缩放);从托盘唤回等场景也复用
+function applyCompactBounds() {
+  if (!win || win.isDestroyed()) return;
+  if (!savedBounds) savedBounds = win.getBounds();
+  win.setResizable(false);
+  win.setMinimumSize(COMPACT_W, COMPACT_H);
+  win.setSize(COMPACT_W, COMPACT_H, true);
+}
+function applyFullBounds() {
+  if (!win || win.isDestroyed()) return;
+  win.setMinimumSize(FULL_MIN_W, FULL_MIN_H);
+  win.setResizable(true);
+  if (savedBounds) win.setBounds(savedBounds, true);
+}
+
 // 点击关闭按钮时询问:最小化到托盘(闹钟照常响)还是直接退出;可记住选择(持久化,重启仍生效)
 const closePrefPath = () => path.join(app.getPath('userData'), 'close-pref.json');
 async function loadClosePref() {
@@ -314,10 +344,12 @@ async function loadPrefs() {
       dismissKey: typeof saved?.dismissKey === 'string' && saved.dismissKey ? saved.dismissKey : DEFAULT_DISMISS.dismissKey,
       dismissHoldSeconds: clampHoldSeconds(saved?.dismissHoldSeconds)
     };
+    // 像素小窗功能停用期间忽略历史偏好,始终以大窗启动
+    if (PIXEL_UI_ENABLED && typeof saved?.compact === 'boolean') compactMode = saved.compact;
   } catch { /* 首次运行或文件损坏:用默认值(空格 / 5 秒) */ }
 }
 async function savePrefs() {
-  try { await fs.writeFile(prefsPath(), JSON.stringify(dismissPrefs, null, 2), 'utf8'); } catch { /* 写不进则本次会话内仍生效 */ }
+  try { await fs.writeFile(prefsPath(), JSON.stringify({ ...dismissPrefs, compact: compactMode }, null, 2), 'utf8'); } catch { /* 写不进则本次会话内仍生效 */ }
 }
 // 配置改动后通知两个窗口:主窗口更新遮罩文案与长按判定,设置窗口回填控件
 function broadcastPrefs() {
@@ -414,10 +446,13 @@ function createWindow() {
   win = new BrowserWindow({
     width: 480, height: 880, minWidth: 420, minHeight: 640,
     backgroundColor: '#f5f6fb',
+    // 像素风格界面自绘窗口按钮(最小化/切换/关闭),因此隐藏系统 overlay 按钮
     titleBarStyle: 'hidden',
-    titleBarOverlay: TITLE_BAR,
+    titleBarOverlay: false,
     webPreferences: { preload: path.join(__dirname, '../preload/preload.js'), contextIsolation: true, nodeIntegration: false }
   });
+  // 从托盘/第二实例唤回时,按当前模式恢复正确尺寸(功能停用时恒为大窗,无需恢复)
+  win.on('show', () => { if (PIXEL_UI_ENABLED && compactMode) applyCompactBounds(); });
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) win.loadURL(devUrl); else win.loadFile(path.join(__dirname, '../../dist/index.html'));
   // 点关闭按钮 → 询问最小化/退出;程序发起的退出(app.quit)走 destroy 不再询问
@@ -428,8 +463,28 @@ function createWindow() {
   });
 }
 
+// 单实例锁:闹钟应用重复启动会出现多个托盘图标、多个实例同时响铃,所以只允许一个进程。
+// 必须在 app.whenReady() 之前调用:拿不到锁说明已有实例在跑,立刻退出,
+// 且后续的初始化(窗口 / 托盘 / IPC)一律跳过,避免第二个进程短暂抢占托盘图标。
+// 已有实例会收到 second-instance 事件 —— 把窗口唤到前台,而不是再开一个。
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // 主窗口可能被隐藏到托盘或已被销毁,两种情况都要唤回前台
+    if (!win || win.isDestroyed()) { createWindow(); return; }
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+}
+
 app.whenReady().then(async () => {
+  // 启动时的重复启动检测:没拿到单实例锁的进程不初始化窗口 / 托盘 / IPC,直接结束
+  if (!gotSingleInstanceLock) return;
   await loadClosePref();
+  await loadPrefs();
   await migrateStripAlarmPrefix();
   const soundsDir = soundsPath();
 
@@ -529,6 +584,23 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('music:site', async () => { await shell.openExternal(MUSIC_SITE); });
+  // 像素风格界面使用自绘窗口按钮,需要这两个控制入口(转调系统方法,不做自定义逻辑)
+  const senderWindow = (event: Electron.IpcMainInvokeEvent) => BrowserWindow.fromWebContents(event.sender);
+  ipcMain.handle('win:minimize', (event) => { senderWindow(event)?.minimize(); });
+  ipcMain.handle('win:close', (event) => { senderWindow(event)?.close(); });
+  // 大窗 / 像素小窗切换:调整窗口尺寸并广播给渲染层切换布局
+  ipcMain.handle('win:setCompact', async (event, compact: unknown) => {
+    if (!PIXEL_UI_ENABLED) return false; // 功能暂缓:不响应切换请求,也不写入偏好
+    const w = senderWindow(event);
+    if (!w || w.isDestroyed()) return false;
+    const isCompact = !!compact;
+    compactMode = isCompact;
+    if (isCompact) applyCompactBounds(); else applyFullBounds();
+    await savePrefs(); // 记住选择,下次启动保持
+    w.webContents.send('win:compactChanged', isCompact);
+    return isCompact;
+  });
+  ipcMain.handle('win:isCompact', () => compactMode);
   // 设置窗口:读取/修改配置
   // 登录项读写统一带 path/args:开发态注册 electron.exe + 应用路径以启动本应用;
   // 读取时的参数必须与写入一致,否则 openAtLogin 判断会失配
@@ -582,6 +654,8 @@ app.whenReady().then(async () => {
     return { path: soundURL(filename), name: filename };
   });
   createWindow();
+  // 上次退出时是小窗,这次也以小窗尺寸启动(功能停用期间不做这一步,避免以小窗打开且无法切回)
+  if (PIXEL_UI_ENABLED && compactMode) applyCompactBounds();
   createTray();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
