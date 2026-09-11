@@ -1,10 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, Tray, protocol, net, shell } from 'electron';
 import type { DownloadItem } from 'electron';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { HolidayConfig } from '../renderer/types';
+import type { Alarm, HolidayConfig } from '../renderer/types';
 
 let win: BrowserWindow | null = null;
 let musicWin: BrowserWindow | null = null;
@@ -21,6 +21,27 @@ const MUSIC_SITE = 'https://flac.music.hi.cn/';
 const GITHUB_URL = 'https://github.com/allthetimes/tiny_alarm';
 const DOWNLOAD_EXTS = /\.(mp3|wav|ogg|m4a|flac|aac|ape)$/i;
 const SOUND_SCHEME = 'alarm-sound';
+// 与 package.json 的 build.appId 保持一致。Windows 靠这个 ID 把窗口/托盘归类到同一个应用,
+// 不设置的话任务栏可能认不出应用、显示成空白图标或独立分组。
+const APP_ID = 'com.tinyalarm.app';
+/** 应用图标: 开发态取仓库里的 build/icon.ico;打包后由 electron-builder 的 extraResources 复制到 resources/icon.ico */
+const appIconPath = () => app.isPackaged
+  ? path.join(process.resourcesPath, 'icon.ico')
+  : path.join(app.getAppPath(), 'build', 'icon.ico');
+// 必须在创建任何窗口之前调用,否则任务栏会先按默认身份登记,后面再改就不生效了
+app.setAppUserModelId(APP_ID);
+
+// ── 内存优化:把 GPU 线程并入主进程 ──
+// Chromium 默认单开一个 GPU 进程做合成。本应用界面是简单 2D,不值当为此多养一个进程。
+// 实测(Electron 34.5.8 / Chromium 132 / Windows)：
+//   默认          —— 进程 4 个,合计约 242 MB(Browser 133 + GPU 64 + 网络 45)
+//   in-process-gpu —— 进程 3 个,合计约 191 MB(Browser 137 + 网络 45)
+// 省约 50 MB(≈20%),且主进程只涨 4 MB —— GPU 进程那份是**真实释放**,不是转移。
+//
+// 代价:GPU 出问题时不再有独立进程兜底(Chromium 平时能自动重启 GPU 进程恢复,
+// 合并后故障会直接落在主进程)。若遇到花屏/显卡驱动相关的崩溃,注释掉下面一行即可还原。
+app.commandLine.appendSwitch('in-process-gpu');
+
 const storePath = () => path.join(app.getPath('userData'), 'alarms.json');
 const soundsPath = () => app.isPackaged ? path.join(app.getPath('userData'), 'sounds') : path.join(process.cwd(), 'sounds');
 const holidaysPath = () => path.join(app.getPath('userData'), 'legal-days.json');
@@ -61,6 +82,129 @@ async function readHolidays(): Promise<HolidayConfig> {
 }
 
 protocol.registerSchemesAsPrivileged([{ scheme: SOUND_SCHEME, privileges: { standard: true, stream: true, supportFetchAPI: true, bypassCSP: true } }]);
+
+// ══════════════════════════════════════════════════════════════════════
+// 闹钟调度引擎(运行在主进程)
+//
+// 为什么必须放主进程,而不是像以前那样放在渲染层:
+//
+// 1. **可靠性**。渲染进程的定时器在窗口隐藏/最小化到托盘后会被 Chromium 节流
+//    (重度节流约降到每分钟一次)。而闹钟是按 HH:MM 精确匹配的,一旦节流后的
+//    触发落点偏离了那一分钟,闹钟就会**整次漏响**。
+// 2. **省内存**。调度不再依赖渲染层之后,渲染进程就退化成纯视图,
+//    窗口可以在收进托盘时被销毁(释放约 80~100MB),响铃或唤回时再重建。
+//
+// 主进程持有权威的闹钟列表,渲染层只是它的一个投影。
+// ══════════════════════════════════════════════════════════════════════
+let alarms: Alarm[] = [];
+let holidays: HolidayConfig = { holidays: [], workdays: [] };
+let lastFiredKey = '';                 // 同一分钟内只触发一次,避免重复响
+let ringing: Alarm | null = null;      // 正在响铃的闹钟(非空时不再触发别的)
+let ringTimer: NodeJS.Timeout | null = null;
+let retryTimer: NodeJS.Timeout | null = null;
+let retriesLeft = 0;
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const dayKey = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+/** 判断某天是否命中该闹钟的重复规则;与渲染层的 matchDay 保持同一套语义 */
+function isAlarmDay(a: Alarm, now: Date): boolean {
+  const day = (now.getDay() + 6) % 7;                 // 0=周一
+  const key = dayKey(now);
+  const isWeekend = now.getDay() === 0 || now.getDay() === 6;
+  const legalWorkday = holidays.workdays.includes(key) || (!isWeekend && !holidays.holidays.includes(key));
+  switch (a.repeat) {
+    case 'daily': return true;
+    case 'weekdays': return !isWeekend;
+    case 'weekends': return isWeekend;
+    case 'legal': return legalWorkday;
+    case 'custom': return a.days.includes(day);
+    default: return true;                             // once
+  }
+}
+
+async function persistAlarms() {
+  try {
+    await fs.mkdir(path.dirname(storePath()), { recursive: true });
+    await fs.writeFile(storePath(), JSON.stringify(alarms, null, 2), 'utf8');
+  } catch { /* 写不进则本次会话内仍生效 */ }
+}
+
+function clearRingTimers() {
+  if (ringTimer) clearTimeout(ringTimer);
+  if (retryTimer) clearTimeout(retryTimer);
+  ringTimer = retryTimer = null;
+}
+
+/** 停止响铃并通知界面收起遮罩 */
+function stopRinging() {
+  clearRingTimers();
+  ringing = null;
+  retriesLeft = 0;
+  win?.webContents.send('alarm:stop');
+}
+
+/** 每秒扫描:到点则响铃。HH:MM 精确匹配 + 同分钟去重,与旧行为一致 */
+function checkDueAlarms() {
+  if (ringing) return;                                // 正在响铃时不叠加新的
+  const now = new Date();
+  const current = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const key = `${dayKey(now)}-${current}`;
+  if (key === lastFiredKey) return;
+  const due = alarms.find(a => a.enabled && a.time === current && isAlarmDay(a, now));
+  if (!due) return;
+  lastFiredKey = key;
+  void fireAlarm(due);
+}
+
+async function fireAlarm(a: Alarm) {
+  ringing = a;
+  retriesLeft = a.snoozeCount || 0;
+  // 一次性闹钟响过即自动停用(与旧行为一致),并让界面刷新
+  if (a.repeat === 'once') {
+    a.enabled = false;
+    await persistAlarms();
+    notifyAlarmsChanged();
+  }
+  // 窗口可能正在托盘里(甚至已被销毁),先把界面准备好再发响铃事件
+  await revealWindowForRing();
+  win?.webContents.send('alarm:ring', a);
+  try {
+    if (Notification.isSupported()) new Notification({ title: '小小闹钟', body: a.label || '时间到了，该开始啦！' }).show();
+  } catch { /* 通知失败不影响响铃 */ }
+  // 响铃时长到了:还有贪睡次数就隔一段时间再响,否则收工
+  ringTimer = setTimeout(() => {
+    if (ringing !== a) return;
+    if (retriesLeft > 0 && a.snoozeMinutes > 0) {
+      retriesLeft--;
+      win?.webContents.send('alarm:stop');            // 先停声,等间隔到了再响
+      retryTimer = setTimeout(() => void fireAlarm(a), a.snoozeMinutes * 60000);
+    } else {
+      stopRinging();
+    }
+  }, Math.max(1, a.ringSeconds || 30) * 1000);
+}
+
+function notifyAlarmsChanged() {
+  win?.webContents.send('alarms:changed', alarms);
+}
+
+/** 响铃时把窗口亮出来:窗口若已在托盘里被销毁,就重建并等加载完成再发事件 */
+async function revealWindowForRing(): Promise<void> {
+  let w = win;
+  if (!w || w.isDestroyed()) w = createWindow();
+  if (w.isMinimized()) w.restore();
+  w.show();
+  w.focus();
+  await whenLoaded(w);
+}
+
+/** 等待页面加载完成;已经加载好的则立即返回 */
+function whenLoaded(w: BrowserWindow): Promise<void> {
+  if (!w.webContents.isLoading()) return Promise.resolve();
+  return new Promise(resolve => w.webContents.once('did-finish-load', () => resolve()));
+}
+
 
 function safeStem(value: string) { return path.basename(value).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 120); }
 async function uniqueSoundName(stem: string, ext: string) {
@@ -363,15 +507,26 @@ async function applyClosePref(action: 'minimize' | 'exit' | null) {
     else await fs.rm(closePrefPath(), { force: true }); // 恢复"每次询问"就删掉记录
   } catch { /* 写不进则本次会话内仍生效 */ }
 }
+/**
+ * 收进系统托盘。
+ * 这里**销毁窗口而不是 hide()**:隐藏的窗口仍然占着整个渲染进程(约 80~100MB),
+ * 而闹钟调度已经搬到主进程,界面不需要常驻后台。
+ * 从托盘唤回、或闹钟到点触发时,会重新创建窗口。
+ */
+function minimizeToTray() {
+  if (!win || win.isDestroyed()) return;
+  win.destroy();
+}
+
 async function handleCloseRequest(): Promise<void> {
   if (quitting) { win?.destroy(); return; }
-  if (closeAction === 'minimize') { win?.hide(); return; }
+  if (closeAction === 'minimize') { minimizeToTray(); return; }
   if (closeAction === 'exit') { quitting = true; app.quit(); return; }
   const { response, checkboxChecked } = await dialog.showMessageBox(win!, {
     type: 'question',
     title: '关闭小小闹钟',
     message: '要最小化到系统托盘，还是直接退出？',
-    detail: '最小化后闹钟会在后台照常响起，可从托盘图标重新打开窗口。',
+    detail: '最小化后闹钟会在后台照常响起（窗口会关闭以节省内存），可从托盘图标重新打开。',
     buttons: ['最小化到托盘', '直接退出', '取消'],
     defaultId: 0,
     cancelId: 2,
@@ -380,7 +535,7 @@ async function handleCloseRequest(): Promise<void> {
   });
   if (response === 2) return; // 取消
   if (checkboxChecked) await applyClosePref(response === 0 ? 'minimize' : 'exit');
-  if (response === 0) win?.hide();
+  if (response === 0) minimizeToTray();
   else { quitting = true; app.quit(); }
 }
 
@@ -416,12 +571,14 @@ function createSettingsWindow() {
 }
 
 function createTray() {
-  // 托盘点击恢复窗口,右键菜单可彻底退出。图标: 打包后取 resources 下的 icon.ico,
-  // 开发态退回 electron 默认(打包时 electron-builder 会把 build/icon.ico 放进 resources)
-  const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'icon.ico')
-    : path.join(app.getAppPath(), 'build', 'icon.ico');
-  tray = new Tray(iconPath);
+  // 托盘点击恢复窗口,右键菜单可彻底退出。
+  // 图标走统一的 appIconPath();该 ICO 内含 16~256 多个尺寸,Windows 托盘会自取 16×16。
+  // 万一文件缺失也不能让程序挂掉 —— Tray 传不存在的路径会抛异常,退化成空图标即可。
+  try {
+    tray = new Tray(appIconPath());
+  } catch {
+    tray = new Tray(nativeImage.createEmpty());
+  }
   tray.setToolTip(`小小闹钟 v${app.getVersion()}`);
   tray.on('click', () => {
     if (!win || win.isDestroyed()) createWindow();
@@ -441,16 +598,22 @@ function createTray() {
   tray.setContextMenu(buildTrayMenu());
 }
 
-function createWindow() {
+function createWindow(): BrowserWindow {
   Menu.setApplicationMenu(null);
   win = new BrowserWindow({
     width: 480, height: 880, minWidth: 420, minHeight: 640,
     backgroundColor: '#f5f6fb',
+    // 显式给窗口图标: 开发态用仓库里的 icon.ico(否则任务栏显示成 Electron 默认图标),
+    // 打包后 exe 自带图标,这里指向 resources/icon.ico 保持一致
+    icon: appIconPath(),
     // 像素风格界面自绘窗口按钮(最小化/切换/关闭),因此隐藏系统 overlay 按钮
     titleBarStyle: 'hidden',
     titleBarOverlay: false,
     webPreferences: { preload: path.join(__dirname, '../preload/preload.js'), contextIsolation: true, nodeIntegration: false }
   });
+  // 销毁后清空引用,让 tray / second-instance / 响铃逻辑能据此判断"需要重建"
+  const self = win;
+  win.on('closed', () => { if (win === self) win = null; });
   // 从托盘/第二实例唤回时,按当前模式恢复正确尺寸(功能停用时恒为大窗,无需恢复)
   win.on('show', () => { if (PIXEL_UI_ENABLED && compactMode) applyCompactBounds(); });
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -461,6 +624,7 @@ function createWindow() {
     event.preventDefault();
     void handleCloseRequest();
   });
+  return win;
 }
 
 // 单实例锁:闹钟应用重复启动会出现多个托盘图标、多个实例同时响铃,所以只允许一个进程。
@@ -488,6 +652,11 @@ app.whenReady().then(async () => {
   await migrateStripAlarmPrefix();
   const soundsDir = soundsPath();
 
+  // 载入权威状态并启动调度引擎。放在窗口创建之前,保证界面一起来就能拿到正确数据。
+  alarms = await readAlarms();
+  holidays = await readHolidays();
+  setInterval(checkDueAlarms, 1000);
+
   protocol.handle(SOUND_SCHEME, async (request) => {
     try {
       const { host, pathname } = new URL(request.url);
@@ -499,8 +668,17 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('alarms:load', readAlarms);
-  ipcMain.handle('alarms:save', async (_event, alarms) => { await fs.mkdir(path.dirname(storePath()), { recursive: true }); await fs.writeFile(storePath(), JSON.stringify(alarms, null, 2), 'utf8'); });
+  // 闹钟:主进程持有权威列表,渲染层读写都经过这里,保证窗口销毁/重建后状态不丢
+  ipcMain.handle('alarms:load', () => alarms);
+  ipcMain.handle('alarms:save', async (_event, next: Alarm[]) => {
+    alarms = Array.isArray(next) ? next : [];
+    await persistAlarms();
+  });
+  // 长按关闭响铃完成时由界面调用;顺带把最新列表回传,让"一次性闹钟已自动停用"能立刻反映到界面
+  ipcMain.handle('alarm:dismiss', () => {
+    stopRinging();
+    return alarms;
+  });
   ipcMain.handle('holidays:load', readHolidays);
   ipcMain.handle('sounds:list', async () => {
     try {

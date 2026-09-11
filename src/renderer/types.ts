@@ -36,6 +36,10 @@ declare global {
     alarmAPI: {
       load: () => Promise<Alarm[]>;
       save: (alarms: Alarm[]) => Promise<void>;
+      onRing: (cb: (alarm: Alarm) => void) => void;
+      onStopRing: (cb: () => void) => void;
+      onAlarmsChanged: (cb: (alarms: Alarm[]) => void) => void;
+      dismissAlarm: () => Promise<Alarm[]>;
       pickAudio: () => Promise<PickedAudio>;
       loadHolidays: () => Promise<HolidayConfig>;
       openMusicSite: () => Promise<void>;

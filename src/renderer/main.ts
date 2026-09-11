@@ -16,12 +16,10 @@ let editingId: string | null = null;
 let selectedSound = { path: '', name: '系统默认铃声' };
 const audio = new Audio();
 let volume = .72;
-let lastTriggered = '';
 let previewTimer: number | null = null;
+// 当前正在响铃的闹钟(仅用于显示标签、以及判断是否要拦截按键)。
+// 响铃的启停时机、时长与贪睡重试都由主进程掌控,这里不再持有任何定时器。
 let ringingAlarm: Alarm | null = null;
-let ringTimer: number | null = null;
-let retryTimer: number | null = null;
-let retriesLeft = 0;
 let holdTimer: number | null = null;
 let holdStarted = 0;
 // 关闭响铃方式:来自设置窗口(默认长按空格 5 秒),通过 getSettings / onSettingsChanged 同步
@@ -136,33 +134,32 @@ function renderCompact(now: Date) {
     countEl.classList.add('off');
   }
 }
-function tick() { const now = new Date(); $('#clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`; $('#date').textContent = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }); $('#greeting').textContent = greeting(now.getHours()); renderCompact(now); checkAlarms(now); }
-function stopRinging() {
-  if (ringTimer) window.clearTimeout(ringTimer);
-  if (retryTimer) window.clearTimeout(retryTimer);
-  ringTimer = retryTimer = null;
+// 只负责刷新时钟与问候语。**闹钟到点判断已移交给主进程** ——
+// 渲染进程的定时器在窗口隐藏后会被 Chromium 节流,靠它判断到点会漏响。
+function tick() { const now = new Date(); $('#clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`; $('#date').textContent = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }); $('#greeting').textContent = greeting(now.getHours()); renderCompact(now); }
+
+// ── 响铃展示层 ──
+// 调度、响铃时长、贪睡重试全在主进程;这里只做两件事:显示遮罩、播放声音。
+function hideRing() {
   audio.pause(); audio.currentTime = 0;
-  ringingAlarm = null; retriesLeft = 0;
+  ringingAlarm = null;
   $('#ring-overlay').classList.add('hidden');
   ($('#space-progress') as HTMLElement).style.width = '0%';
   ($('#hold-seconds') as HTMLElement).textContent = '0';
 }
-function playRing(a: Alarm) {
+function showRing(a: Alarm) {
   ringingAlarm = a;
   $('#ring-label').textContent = a.label || '时间到了';
   $('#ring-overlay').classList.remove('hidden');
   audio.volume = volume;
   if (a.soundPath) { audio.src = a.soundPath; audio.loop = true; audio.play().catch(() => { }); }
   else { const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); gain.gain.value = volume; osc.connect(gain).connect(ctx.destination); osc.frequency.value = 660; osc.start(); osc.stop(ctx.currentTime + 2); }
-  ringTimer = window.setTimeout(() => {
-    audio.pause();
-    if (ringingAlarm !== a) return;
-    if (retriesLeft > 0 && a.snoozeMinutes > 0) {
-      retriesLeft--;
-      retryTimer = window.setTimeout(() => playRing(a), a.snoozeMinutes * 60000);
-    } else stopRinging();
-  }, Math.max(1, a.ringSeconds || 30) * 1000);
 }
+// 主进程通知:开始/停止响铃
+window.alarmAPI.onRing(a => showRing(a));
+window.alarmAPI.onStopRing(() => hideRing());
+// 主进程改了列表(例如"一次性闹钟"响过后自动停用)→ 同步界面
+window.alarmAPI.onAlarmsChanged(list => { alarms = list; render(); });
 // 应用(或热更新)关闭响铃配置:同步遮罩里的按键名与目标秒数,长按判定随之变化
 function applyDismissConfig(key: string, seconds: number) {
   dismissCode = key || 'Space';
@@ -182,7 +179,14 @@ function beginHold() {
     const seconds = Math.min(dismissHoldSeconds, (Date.now() - holdStarted) / 1000);
     ($('#hold-seconds') as HTMLElement).textContent = seconds.toFixed(1);
     ($('#space-progress') as HTMLElement).style.width = `${seconds / dismissHoldSeconds * 100}%`;
-    if (seconds >= dismissHoldSeconds) { if (holdTimer) window.clearInterval(holdTimer); holdTimer = null; stopRinging(); }
+    if (seconds >= dismissHoldSeconds) {
+      if (holdTimer) window.clearInterval(holdTimer);
+      holdTimer = null;
+      // 先收起遮罩并停声,再让主进程停止响铃(它会一并取消后续的贪睡重试),
+      // 同时把最新列表带回来 —— 一次性闹钟可能已在响铃时被自动停用
+      hideRing();
+      void window.alarmAPI.dismissAlarm().then(list => { alarms = list; render(); });
+    }
   }, 50);
 }
 function endHold() {
@@ -190,18 +194,6 @@ function endHold() {
   holdTimer = null; ($('#space-progress') as HTMLElement).style.width = '0%'; ($('#hold-seconds') as HTMLElement).textContent = '0';
 }
 
-function checkAlarms(now: Date) {
-  const current = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  const stamp = `${now.toDateString()}-${current}`;
-  if (stamp === lastTriggered) return;
-  const due = alarms.find(a => a.enabled && a.time === current && matchDay(a, now));
-  if (!due) return;
-  lastTriggered = stamp;
-  retriesLeft = due.snoozeCount || 0;
-  playRing(due);
-  if ('Notification' in window && Notification.permission === 'granted') new Notification('小小闹钟', { body: due.label || '时间到了，该开始啦！' });
-  if (due.repeat === 'once') { due.enabled = false; persist().then(render); } else render();
-}
 function render() {
   const list = $('#alarm-list');
   $('#empty').classList.toggle('hidden', alarms.length > 0);
@@ -416,7 +408,6 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => { if (e.code === dismissCode) endHold(); });
 window.alarmAPI.getSettings().then(s => applyDismissConfig(s.dismissKey, s.dismissHoldSeconds)).catch(() => { /* 读取失败沿用默认 */ });
 window.alarmAPI.onSettingsChanged(prefs => applyDismissConfig(prefs.dismissKey, prefs.dismissHoldSeconds));
-if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
 
 // ── 窗口按钮:最小化 ·（切换像素小窗,暂缓）· 关闭 ──
 // 标题栏按钮自绘,真实窗口尺寸由主进程调整;像素小窗入口受 PIXEL_UI_ENABLED 控制

@@ -18,3 +18,5 @@ verify-shell.*
 shot-*.png
 # headless Chrome 临时 profile（预览时会生成）
 .chrome-p*/
+# 图标预览图(由一次性脚本生成)
+.icon-preview.png

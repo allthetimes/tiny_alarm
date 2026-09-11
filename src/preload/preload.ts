@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('alarmAPI', {
   load: () => ipcRenderer.invoke('alarms:load'),
   save: (alarms: unknown[]) => ipcRenderer.invoke('alarms:save', alarms),
+  // 响铃由主进程调度,渲染层只负责显示遮罩与发声
+  onRing: (cb: (alarm: unknown) => void) => { ipcRenderer.on('alarm:ring', (_e, alarm) => cb(alarm)); },
+  onStopRing: (cb: () => void) => { ipcRenderer.on('alarm:stop', () => cb()); },
+  onAlarmsChanged: (cb: (alarms: unknown[]) => void) => { ipcRenderer.on('alarms:changed', (_e, list) => cb(list)); },
+  dismissAlarm: () => ipcRenderer.invoke('alarm:dismiss'),
   pickAudio: () => ipcRenderer.invoke('audio:pick'),
   loadHolidays: () => ipcRenderer.invoke('holidays:load'),
   openMusicSite: () => ipcRenderer.invoke('music:site'),

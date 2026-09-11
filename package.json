@@ -1,6 +1,6 @@
 {
   "name": "tiny-alarm",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "A calm, focused desktop alarm clock",
   "author": "allthetimes (https://github.com/allthetimes)",
   "main": "dist-electron/main/main.js",
@@ -25,14 +25,22 @@
     "appId": "com.tinyalarm.app",
     "productName": "小小闹钟",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
