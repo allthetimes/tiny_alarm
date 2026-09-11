@@ -1,6 +1,6 @@
 {
   "name": "tiny-alarm",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "A calm, focused desktop alarm clock",
   "author": "allthetimes (https://github.com/allthetimes)",
   "main": "dist-electron/main/main.js",
@@ -8,7 +8,8 @@
     "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.electron.json -w\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "tsc -p tsconfig.electron.json && node scripts/vite-build.cjs build --base=./",
     "start": "electron .",
-    "pack": "npm run build && electron-builder"
+    "pack": "npm run build && electron-builder",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -23,9 +24,16 @@
   "build": {
     "appId": "com.tinyalarm.app",
     "productName": "小小闹钟",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "dist-electron/**/*"],
-    "win": { "target": "nsis" },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
